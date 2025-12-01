@@ -506,6 +506,10 @@ class SimpleSchoolBot:
             self.send_message(user[0], message)
     
     def check_achievements(self, user_id, action_type, value=1):
+        """Проверка достижений с защитой от повторной выдачи"""
+        logger.info(f"🔍 Проверка достижений для пользователя {user_id}, действие: {action_type}")
+        
+        # Получаем достижения для этого типа действия
         achievements = self.db.fetchall(
             "SELECT id, name, description, icon, condition_type, condition_value FROM achievements WHERE condition_type = ?",
             (action_type,)
@@ -514,13 +518,34 @@ class SimpleSchoolBot:
         for achievement in achievements:
             achievement_id, name, description, icon, condition_type, condition_value = achievement
             
+            # Проверяем, есть ли уже это достижение у пользователя
+            existing = self.db.fetchone(
+                "SELECT 1 FROM user_achievements WHERE user_id = ? AND achievement_id = ?",
+                (user_id, achievement_id)
+            )
+            
+            # Если уже есть - пропускаем
+            if existing:
+                logger.info(f"✓ Достижение '{name}' уже получено пользователем {user_id}")
+                continue
+            
+            # Проверяем прогресс пользователя
             user_progress = self.get_user_achievement_progress(user_id, condition_type)
+            logger.info(f"📊 Прогресс пользователя {user_id} для '{name}': {user_progress}/{condition_value}")
+            
+            # Если достигнут необходимый прогресс
             if user_progress >= condition_value:
+                logger.info(f"🎉 Пользователь {user_id} выполнил условие для достижения '{name}'")
+                # Выдаем достижение
                 self.grant_achievement(user_id, achievement_id, name, description, icon)
+            else:
+                logger.info(f"⏳ Пользователь {user_id} еще не выполнил условие для '{name}' ({user_progress}/{condition_value})")
     
     def get_user_achievement_progress(self, user_id, condition_type):
         if condition_type == "registration":
-            return 1
+            # Проверяем, зарегистрирован ли пользователь
+            user = self.get_user(user_id)
+            return 1 if user else 0
         elif condition_type == "schedule_views":
             result = self.db.fetchone(
                 "SELECT COUNT(*) FROM user_activity WHERE user_id = ? AND action_type = 'schedule_view'",
@@ -546,22 +571,36 @@ class SimpleSchoolBot:
         return 0
     
     def grant_achievement(self, user_id, achievement_id, name, description, icon):
+        """Выдача достижения с проверкой дубликатов"""
+        logger.info(f"🎁 Попытка выдать достижение '{name}' пользователю {user_id}")
+        
+        # Проверяем, есть ли уже это достижение у пользователя
         existing = self.db.fetchone(
             "SELECT 1 FROM user_achievements WHERE user_id = ? AND achievement_id = ?",
             (user_id, achievement_id)
         )
+        
         if existing:
+            logger.info(f"⚠️ Достижение '{name}' уже есть у пользователя {user_id}, пропускаем")
             return
         
+        # Добавляем достижение
         self.db.execute(
             "INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)",
             (user_id, achievement_id)
         )
         
+        # Логируем действие
+        logger.info(f"✅ Достижение '{name}' успешно выдано пользователю {user_id}")
+        
+        # Проверяем настройки уведомлений
         settings = self.get_notification_settings(user_id)
         if settings.get('achievement_notifications'):
             message = f"{icon} <b>Новое достижение!</b>\n\n<b>{name}</b>\n{description}"
             self.send_message(user_id, message)
+            logger.info(f"📨 Уведомление о достижении отправлено пользователю {user_id}")
+        else:
+            logger.info(f"🔕 Уведомления о достижениях отключены для пользователя {user_id}")
     
     def get_user_achievements(self, user_id):
         return self.db.fetchall("""
@@ -1632,6 +1671,7 @@ class SimpleSchoolBot:
                 "INSERT INTO user_activity (user_id, action_type, details) VALUES (?, ?, ?)",
                 (user_id, "registration", f"class: {class_name}")
             )
+            # Проверяем достижения при регистрации
             self.check_achievements(user_id, "registration")
         else:
             self.send_message(chat_id, "❌ Ошибка регистрации", self.main_menu_keyboard())
@@ -1773,6 +1813,8 @@ class SimpleSchoolBot:
                 self.day_selection_inline_keyboard()
             )
             self.log_user_activity(user_id, "schedule_view", f"Class: {class_name}")
+            # Проверяем достижения при просмотре расписания
+            self.check_achievements(user_id, "schedule_views")
         
         elif text == "🏫 Общее расписание":
             self.user_states[user_id] = {"action": "general_schedule"}
@@ -1884,12 +1926,24 @@ class SimpleSchoolBot:
         }
         
         setting_key = setting_map[data]
+        
+        # Сохраняем предыдущее значение
+        previous_value = settings[setting_key]
+        # Меняем значение
         settings[setting_key] = not settings[setting_key]
+        
+        # Обновляем настройки в базе
         self.update_notification_settings(user_id, settings)
         
-        if setting_key == "weather_notifications" and settings[setting_key]:
+        # Логируем изменение
+        logger.info(f"⚙️ Пользователь {user_id} изменил настройку {setting_key}: {previous_value} -> {settings[setting_key]}")
+        
+        # Проверяем достижения только для weather_enabled и только если ВКЛЮЧИЛИ (а не выключили)
+        if setting_key == "weather_notifications" and settings[setting_key] and not previous_value:
+            logger.info(f"🔍 Проверка достижения 'weather_enabled' для пользователя {user_id}")
             self.check_achievements(user_id, "weather_enabled")
         
+        # Обновляем интерфейс настроек
         self.handle_notifications_settings(chat_id, user_id)
 
     def show_user_achievements(self, chat_id, user_id):
@@ -1939,6 +1993,9 @@ class SimpleSchoolBot:
             text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n\n"
             
             self.log_user_activity(user_id, "news_read", f"News: {title}")
+        
+        # Проверяем достижения после прочтения новости
+        self.check_achievements(user_id, "news_read")
         
         self.send_message(chat_id, text, self.news_keyboard())
 
