@@ -2550,7 +2550,109 @@ class SimpleSchoolBot:
             schedule_text = f"❌ Расписание для {self.safe_message(class_name)} класса на {day_name.lower()} не найдено"
         
         self.send_message(chat_id, schedule_text, self.main_menu_keyboard())
-
+    
+    def handle_schedule_input(self, chat_id, username, text):
+        if username not in self.admin_states:
+            return
+        
+        class_name = self.admin_states[username].get("class")
+        day_code = self.admin_states[username].get("day")
+        
+        if not class_name or not day_code:
+            self.send_message(chat_id, "❌ Ошибка: данные не найдены", self.admin_menu_inline_keyboard())
+            return
+        
+        if text == '-':
+            self.save_schedule(class_name, day_code, [])
+            self.send_message(chat_id, "✅ Расписание очищено!", self.admin_menu_inline_keyboard())
+        else:
+            lessons = []
+            lines = text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line or not line[0].isdigit():
+                    continue
+                    
+                parts = line.split('.', 1)
+                if len(parts) < 2:
+                    continue
+                    
+                try:
+                    lesson_num = int(parts[0].strip())
+                    lesson_info = parts[1].strip()
+                    
+                    # Разделяем на части по дефисам
+                    parts_by_dash = [part.strip() for part in lesson_info.split('-')]
+                    
+                    # Первая часть - это предмет и возможный учитель в скобках
+                    subject_part = parts_by_dash[0].strip()
+                    subject = subject_part
+                    teacher = ""
+                    room = ""
+                    
+                    # Проверяем, есть ли учитель в скобках в первой части
+                    if '(' in subject_part and ')' in subject_part:
+                        # Извлекаем учителя из скобок
+                        start = subject_part.find('(')
+                        end = subject_part.find(')')
+                        teacher = subject_part[start+1:end].strip()
+                        # Удаляем скобки с учителем из предмета
+                        subject = subject_part[:start].strip()
+                    
+                    # Если есть вторая часть после дефиса - это кабинет
+                    if len(parts_by_dash) >= 2:
+                        room = parts_by_dash[1].strip()
+                        # Если есть третья часть - это тоже кабинет (дублирование)
+                        if len(parts_by_dash) >= 3:
+                            # Берем последнюю часть как кабинет
+                            room = parts_by_dash[-1].strip()
+                            # Логируем дублирование для отладки
+                            logger.info(f"Обнаружено дублирование кабинета в строке: {line}")
+                    
+                    # Специальная обработка для случаев вроде "алгебра (6)"
+                    # Если teacher похож на номер кабинета, а room пустой
+                    if teacher and not room and teacher.isdigit():
+                        room = teacher
+                        teacher = ""
+                        logger.info(f"Перенос учителя как кабинета: teacher={teacher} -> room={room}")
+                    
+                    # Очищаем предмет от лишних символов
+                    subject = subject.replace('()', '').strip()
+                    
+                    # Убираем дублирование в кабинете (если что-то вроде "37 - 37")
+                    if ' - ' in room:
+                        room_parts = room.split(' - ')
+                        # Берем первую часть как кабинет
+                        room = room_parts[0].strip()
+                    
+                    if subject:
+                        lessons.append((lesson_num, subject, teacher, room))
+                        logger.info(f"Парсинг урока: номер={lesson_num}, предмет={subject}, учитель={teacher}, кабинет={room}")
+                except ValueError as e:
+                    logger.error(f"Ошибка парсинга строки '{line}': {e}")
+                    continue
+            
+            if lessons:
+                self.save_schedule(class_name, day_code, lessons)
+                # Формируем отчет о сохранении
+                schedule_text = f"✅ Расписание для {self.safe_message(class_name)} класса обновлено!\n\n"
+                schedule_text += f"<b>Сохранено уроков:</b> {len(lessons)}\n\n"
+                schedule_text += "<b>Обновленное расписание:</b>\n"
+                for lesson_num, subject, teacher, room in sorted(lessons, key=lambda x: x[0]):
+                    schedule_text += f"{lesson_num}. <b>{subject}</b>"
+                    if teacher:
+                        schedule_text += f" ({teacher})"
+                    if room:
+                        schedule_text += f" - {room}"
+                    schedule_text += "\n"
+                
+                self.send_message(chat_id, schedule_text, self.admin_menu_inline_keyboard())
+            else:
+                self.send_message(chat_id, "❌ Не удалось распарсить ни одного урока", self.admin_menu_inline_keyboard())
+        
+        if username in self.admin_states:
+            del self.admin_states[username]
     
     def handle_admin_menu(self, chat_id, username, text):
         if not self.is_admin(username):
@@ -2695,109 +2797,6 @@ class SimpleSchoolBot:
             f"Или отправьте '-' для очистки расписания.",
             self.cancel_keyboard()
         )
-    
-def handle_schedule_input(self, chat_id, username, text):
-    if username not in self.admin_states:
-        return
-    
-    class_name = self.admin_states[username].get("class")
-    day_code = self.admin_states[username].get("day")
-    
-    if not class_name or not day_code:
-        self.send_message(chat_id, "❌ Ошибка: данные не найдены", self.admin_menu_inline_keyboard())
-        return
-    
-    if text == '-':
-        self.save_schedule(class_name, day_code, [])
-        self.send_message(chat_id, "✅ Расписание очищено!", self.admin_menu_inline_keyboard())
-    else:
-        lessons = []
-        lines = text.split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            if not line or not line[0].isdigit():
-                continue
-                
-            parts = line.split('.', 1)
-            if len(parts) < 2:
-                continue
-                
-            try:
-                lesson_num = int(parts[0].strip())
-                lesson_info = parts[1].strip()
-                
-                # Разделяем на части по дефисам
-                parts_by_dash = [part.strip() for part in lesson_info.split('-')]
-                
-                # Первая часть - это предмет и возможный учитель в скобках
-                subject_part = parts_by_dash[0].strip()
-                subject = subject_part
-                teacher = ""
-                room = ""
-                
-                # Проверяем, есть ли учитель в скобках в первой части
-                if '(' in subject_part and ')' in subject_part:
-                    # Извлекаем учителя из скобок
-                    start = subject_part.find('(')
-                    end = subject_part.find(')')
-                    teacher = subject_part[start+1:end].strip()
-                    # Удаляем скобки с учителем из предмета
-                    subject = subject_part[:start].strip()
-                
-                # Если есть вторая часть после дефиса - это кабинет
-                if len(parts_by_dash) >= 2:
-                    room = parts_by_dash[1].strip()
-                    # Если есть третья часть - это тоже кабинет (дублирование)
-                    if len(parts_by_dash) >= 3:
-                        # Берем последнюю часть как кабинет
-                        room = parts_by_dash[-1].strip()
-                        # Логируем дублирование для отладки
-                        logger.info(f"Обнаружено дублирование кабинета в строке: {line}")
-                
-                # Специальная обработка для случаев вроде "алгебра (6)"
-                # Если teacher похож на номер кабинета, а room пустой
-                if teacher and not room and teacher.isdigit():
-                    room = teacher
-                    teacher = ""
-                    logger.info(f"Перенос учителя как кабинета: teacher={teacher} -> room={room}")
-                
-                # Очищаем предмет от лишних символов
-                subject = subject.replace('()', '').strip()
-                
-                # Убираем дублирование в кабинете (если что-то вроде "37 - 37")
-                if ' - ' in room:
-                    room_parts = room.split(' - ')
-                    # Берем первую часть как кабинет
-                    room = room_parts[0].strip()
-                
-                if subject:
-                    lessons.append((lesson_num, subject, teacher, room))
-                    logger.info(f"Парсинг урока: номер={lesson_num}, предмет={subject}, учитель={teacher}, кабинет={room}")
-            except ValueError as e:
-                logger.error(f"Ошибка парсинга строки '{line}': {e}")
-                continue
-        
-        if lessons:
-            self.save_schedule(class_name, day_code, lessons)
-            # Формируем отчет о сохранении
-            schedule_text = f"✅ Расписание для {self.safe_message(class_name)} класса обновлено!\n\n"
-            schedule_text += f"<b>Сохранено уроков:</b> {len(lessons)}\n\n"
-            schedule_text += "<b>Обновленное расписание:</b>\n"
-            for lesson_num, subject, teacher, room in sorted(lessons, key=lambda x: x[0]):
-                schedule_text += f"{lesson_num}. <b>{subject}</b>"
-                if teacher:
-                    schedule_text += f" ({teacher})"
-                if room:
-                    schedule_text += f" - {room}"
-                schedule_text += "\n"
-            
-            self.send_message(chat_id, schedule_text, self.admin_menu_inline_keyboard())
-        else:
-            self.send_message(chat_id, "❌ Не удалось распарсить ни одного урока", self.admin_menu_inline_keyboard())
-    
-    if username in self.admin_states:
-        del self.admin_states[username]
     
     def show_statistics(self, chat_id):
         users = self.get_all_users()
@@ -2961,7 +2960,6 @@ def handle_schedule_input(self, chat_id, username, text):
             logger.error(f"Ошибка в process_update: {e}")
             import traceback
             logger.error(traceback.format_exc())
-
 
     def run(self):
         logger.info("Бот запущен!")
