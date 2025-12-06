@@ -1757,10 +1757,16 @@ class SimpleSchoolBot:
         elif data == "achievement_progress":
             logger.info(f"Вызов show_achievement_progress для пользователя {user_id}")
             self.show_achievement_progress(chat_id, user_id)
+        
+        # === ВАЖНО: ДОБАВЬТЕ ЭТИ СТРОКИ ДЛЯ НОВОСТЕЙ ===
         elif data == "recent_news":
             self.show_recent_news(chat_id, user_id)
         elif data == "news_stats":
             self.show_news_statistics(chat_id, user_id)
+        elif data == "news_search":  # ← ДОБАВЬТЕ ЭТУ СТРОКУ!
+            self.handle_news_search(chat_id, user_id)
+        # ==============================================
+        
         elif data == "my_statistics":
             self.show_detailed_statistics(chat_id, user_id)
         elif data in ["settings_back", "achievements_back", "news_back", "stats_back"]:
@@ -1785,17 +1791,24 @@ class SimpleSchoolBot:
             
         elif data.startswith("admin_"):
             self.handle_admin_callback(chat_id, username, data)
-            
+        
+        # Добавьте блок else для отладки неизвестных команд
+        else:
+            logger.warning(f"⚠️ Неизвестный callback_data: {data}")
+        
         self.answer_callback_query(callback_query["id"])
 
     def handle_news_search(self, chat_id, user_id):
         """Обработка поиска новостей"""
+        logger.info(f"🟢 Вызван handle_news_search для пользователя {user_id}")
+        
         self.user_states[user_id] = {"action": "news_search"}
         self.send_message(
             chat_id,
             "🔍 <b>Поиск новостей</b>\n\n"
             "Введите ключевое слово для поиска в заголовке или содержании новостей.\n"
-            "Например: 'расписание', 'олимпиада', 'праздник'",
+            "Например: 'расписание', 'олимпиада', 'праздник'\n\n"
+            "Для отмены нажмите '❌ Отменить'",
             self.cancel_keyboard()
         )
 
@@ -2745,7 +2758,6 @@ class SimpleSchoolBot:
         
         if admin_username in self.admin_states:
             del self.admin_states[admin_username]
-
     def answer_callback_query(self, callback_query_id, text=None):
         url = f"{BASE_URL}/answerCallbackQuery"
         data = {"callback_query_id": callback_query_id}
@@ -2753,10 +2765,13 @@ class SimpleSchoolBot:
             data["text"] = text
         
         try:
+            logger.info(f"📤 Отправляем answerCallbackQuery для ID: {callback_query_id}")
             response = requests.post(url, json=data, timeout=10)
-            return response.json()
+            result = response.json()
+            logger.info(f"📥 Ответ answerCallbackQuery: {result}")
+            return result
         except Exception as e:
-            logger.error(f"Ошибка ответа на callback: {e}")
+            logger.error(f"❌ Ошибка ответа на callback: {e}")
             return None
     
     def handle_day_selection(self, chat_id, user_id, day_text):
