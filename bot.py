@@ -239,6 +239,7 @@ class DatabaseManager:
                 logger.info("✅ Начальные данные для звонков созданы")
             
             self._create_default_achievements()
+            self._cleanup_duplicate_achievements()
             
         except Exception as e:
             logger.error(f"Ошибка создания таблиц: {e}")
@@ -254,10 +255,43 @@ class DatabaseManager:
         ]
         
         for name, description, icon, condition_type, condition_value in default_achievements:
-            self.execute(
-                "INSERT INTO achievements (name, description, icon, condition_type, condition_value) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                (name, description, icon, condition_type, condition_value)
+            # Проверяем, существует ли уже достижение с таким condition_type
+            existing = self.fetchone(
+                "SELECT 1 FROM achievements WHERE condition_type = ?",
+                (condition_type,)
             )
+            
+            # Добавляем только если не существует
+            if not existing:
+                self.execute(
+                    "INSERT INTO achievements (name, description, icon, condition_type, condition_value) VALUES (?, ?, ?, ?, ?)",
+                    (name, description, icon, condition_type, condition_value)
+                )
+    
+    def _cleanup_duplicate_achievements(self):
+        """Удаляет дублирующиеся достижения из базы данных"""
+        try:
+            # Для PostgreSQL
+            if self.db_type == 'postgresql':
+                self.execute("""
+                    DELETE FROM achievements a1
+                    USING achievements a2
+                    WHERE a1.condition_type = a2.condition_type 
+                      AND a1.id > a2.id
+                """)
+            # Для SQLite
+            else:
+                self.execute("""
+                    DELETE FROM achievements
+                    WHERE id NOT IN (
+                        SELECT MIN(id)
+                        FROM achievements
+                        GROUP BY condition_type
+                    )
+                """)
+            logger.info("✅ Дублирующиеся достижения очищены")
+        except Exception as e:
+            logger.error(f"❌ Ошибка очистки дубликатов: {e}")
 
 class RateLimiter:
     def __init__(self, max_requests=MAX_REQUESTS_PER_MINUTE, window=60):
@@ -1193,7 +1227,7 @@ class SimpleSchoolBot:
                 logger.info(f"Выбран лист: '{selected_sheet}'")
                 
                 df = pd.read_excel(io.BytesIO(file_content), sheet_name=selected_sheet, header=None)
-                logger.info(f"Размер таблиции: {df.shape} (строк: {df.shape[0]}, колонок: {df.shape[1]})")
+                logger.info(f"Размер таблицы: {df.shape} (строк: {df.shape[0]}, колонок: {df.shape[1]})")
                 
                 self._log_file_structure(df, selected_sheet)
                 
@@ -2028,20 +2062,18 @@ class SimpleSchoolBot:
         self.send_message(chat_id, text, self.achievements_keyboard())
 
     def show_achievement_progress(self, chat_id, user_id):
-        achievement_types = ["registration", "schedule_views", "total_actions", "news_read", "weather_enabled"]
+        # Получаем уникальные достижения (по condition_type)
+        achievements = self.db.fetchall(
+            "SELECT name, condition_type, condition_value FROM achievements GROUP BY condition_type"
+        )
+        
         text = "📊 <b>Ваш прогресс по достижениям</b>\n\n"
         
-        for achievement_type in achievement_types:
-            progress = self.get_user_achievement_progress(user_id, achievement_type)
-            achievements = self.db.fetchall(
-                "SELECT name, condition_value FROM achievements WHERE condition_type = ?",
-                (achievement_type,)
-            )
-            
-            for name, condition_value in achievements:
-                percentage = min(100, int((progress / condition_value) * 100)) if condition_value > 0 else 100
-                progress_bar = "🟩" * (percentage // 20) + "⬜" * (5 - percentage // 20)
-                text += f"{name}: {progress}/{condition_value}\n{progress_bar} {percentage}%\n\n"
+        for name, condition_type, condition_value in achievements:
+            progress = self.get_user_achievement_progress(user_id, condition_type)
+            percentage = min(100, int((progress / condition_value) * 100)) if condition_value > 0 else 100
+            progress_bar = "🟩" * (percentage // 20) + "⬜" * (5 - percentage // 20)
+            text += f"<b>{name}</b>: {progress}/{condition_value}\n{progress_bar} {percentage}%\n\n"
         
         self.send_message(chat_id, text, self.achievements_keyboard())
 
