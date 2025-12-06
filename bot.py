@@ -40,7 +40,7 @@ if not BOT_TOKEN:
     logging.error("BOT_TOKEN environment variable is not set!")
     exit(1)
 
-ADMINS = [admin.strip() for admin in os.environ.get('ADMINS', 'nadya_yakovleva01,Priikalist').split(',') if admin.strip()]
+ADMINS = [admin.strip() for admin in os.environ.get('ADMINS', 'r1kuza,nadya_yakovleva01,Priikalist').split(',') if admin.strip()]
 WEATHER_API_KEY = os.environ.get('WEATHER_API_KEY')
 SAMARA_TIMEZONE = pytz.timezone('Europe/Samara')
 
