@@ -2244,6 +2244,24 @@ class SimpleSchoolBot:
     def handle_main_menu(self, chat_id, user_id, text, username):
         user_data = self.get_user(user_id)
         
+        # Обработка кнопки "Общее расписание" для всех пользователей
+        if text == "🏫 Общее расписание":
+            if not user_data:
+                self.send_message(
+                    chat_id,
+                    "❌ Вы не зарегистрированы. Пожалуйста, введите свои данные в формате: Фамилия Имя, Класс"
+                )
+                return
+            
+            self.user_states[user_id] = {"action": "general_schedule"}
+            self.send_message(
+                chat_id,
+                "Выберите класс:",
+                self.class_selection_keyboard()
+            )
+            return
+        
+        # Обработка кнопки "📚 Моё расписание"
         if text == "📚 Моё расписание":
             if not user_data:
                 self.send_message(
@@ -2262,15 +2280,9 @@ class SimpleSchoolBot:
             self.log_user_activity(user_id, "schedule_view", f"Class: {class_name}")
             # Проверяем достижения при просмотре расписания
             self.check_achievements(user_id, "schedule_views")
+            return
         
-        elif text == "🏫 Общее расписание":
-            self.user_states[user_id] = {"action": "general_schedule"}
-            self.send_message(
-                chat_id,
-                "Выберите класс:",
-                self.class_selection_keyboard()
-            )
-        
+        # Остальные кнопки главного меню...
         elif text == "🔔 Звонки":
             bells = self.get_bell_schedule()
             bells_text = "🔔 <b>Расписание звонков</b>\n\n"
