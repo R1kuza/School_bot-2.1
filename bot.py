@@ -1787,6 +1787,33 @@ class SimpleSchoolBot:
             
         self.answer_callback_query(callback_query["id"])
 
+    def handle_news_search(self, chat_id, user_id):
+        """Обработка поиска новостей"""
+        self.user_states[user_id] = {"action": "news_search"}
+        self.send_message(
+            chat_id,
+            "🔍 <b>Поиск новостей</b>\n\n"
+            "Введите ключевое слово для поиска в заголовке или содержании новостей.\n"
+            "Например: 'расписание', 'олимпиада', 'праздник'",
+            self.cancel_keyboard()
+        )
+
+    def search_news(self, query, limit=10):
+        """Поиск новостей по запросу"""
+        try:
+            # Поиск по заголовку и содержанию
+            search_query = f"%{query}%"
+            return self.db.fetchall(
+                """SELECT id, title, content, author, publish_date, target_audience 
+                FROM school_news 
+                WHERE (title LIKE ? OR content LIKE ?) AND is_published = TRUE
+                ORDER BY publish_date DESC LIMIT ?""",
+                (search_query, search_query, limit)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка поиска новостей: {e}")
+            return []
+
     def handle_news_edit_field(self, chat_id, username, data):
         """Обработка нажатия на кнопку редактирования поля новости"""
         if not self.is_admin(username):
@@ -1879,6 +1906,76 @@ class SimpleSchoolBot:
             self.start_edit_bell(chat_id, username)
         elif data == "admin_view_bells":
             self.show_all_bells(chat_id)
+
+    def process_news_search(self, chat_id, user_id, query):
+        """Обработка поискового запроса"""
+        if not query or len(query.strip()) < 2:
+            self.send_message(
+                chat_id,
+                "❌ Слишком короткий запрос. Введите минимум 2 символа.",
+                self.news_keyboard()
+            )
+            del self.user_states[user_id]
+            return
+        
+        # Выполняем поиск
+        news_results = self.search_news(query)
+        
+        if not news_results:
+            self.send_message(
+                chat_id,
+                f"🔍 <b>Результаты поиска по запросу: '{query}'</b>\n\n"
+                "❌ Новости не найдены. Попробуйте другие ключевые слова.",
+                self.news_keyboard()
+            )
+            del self.user_states[user_id]
+            return
+        
+        # Показываем результаты
+        text = f"🔍 <b>Результаты поиска по запросу: '{query}'</b>\n\n"
+        text += f"Найдено новостей: {len(news_results)}\n\n"
+        
+        for news_item in news_results:
+            news_id, title, content, author, publish_date, target_audience = news_item
+            date_str = self.format_date(publish_date)
+            
+            # Находим позицию запроса в тексте для выделения
+            query_lower = query.lower()
+            title_lower = title.lower()
+            content_lower = content.lower()
+            
+            # Создаем превью с выделением
+            preview = ""
+            if query_lower in title_lower:
+                preview = title
+            elif query_lower in content_lower:
+                pos = content_lower.find(query_lower)
+                start = max(0, pos - 50)
+                end = min(len(content), pos + len(query) + 50)
+                preview = content[start:end]
+                if start > 0:
+                    preview = "..." + preview
+                if end < len(content):
+                    preview = preview + "..."
+            
+            text += f"📰 <b>{self.safe_message(title)}</b>\n"
+            text += f"📅 {date_str} | 👤 {author}\n"
+            text += f"🎯 Аудитория: {target_audience}\n"
+            text += f"📝 {self.safe_message(preview[:200])}\n"
+            text += f"🔗 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
+            text += "─" * 30 + "\n\n"
+        
+        # Добавляем навигацию
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "🔍 Новый поиск", "callback_data": "news_search"}],
+                [{"text": "📰 Все новости", "callback_data": "recent_news"}],
+                [{"text": "⬅️ Назад", "callback_data": "news_back"}]
+            ]
+        }
+        
+        self.send_message(chat_id, text, keyboard)
+        del self.user_states[user_id]
     
     def show_news_management(self, chat_id, username):
         if not self.is_admin(username):
@@ -2028,6 +2125,11 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "Действие отменено", self.main_menu_keyboard())
             return
         
+        # Проверяем состояние поиска новостей
+        if user_id in self.user_states and self.user_states[user_id].get("action") == "news_search":
+            self.process_news_search(chat_id, user_id, text)
+            return
+            
         if username in self.admin_states:
             state = self.admin_states[username]
             
