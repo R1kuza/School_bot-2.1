@@ -1707,7 +1707,7 @@ class SimpleSchoolBot:
         
         text = "👨‍💼 <b>Панель администратора</b>\n\nВыберите действие:"
         self.send_message(chat_id, text, self.admin_menu_inline_keyboard())
-    
+        
     def handle_callback_query(self, update):
         callback_query = update.get("callback_query")
         if not callback_query:
