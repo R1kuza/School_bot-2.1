@@ -594,9 +594,21 @@ class SimpleSchoolBot:
         users = self.db.fetchall(
             "SELECT user_id FROM notification_settings WHERE news_notifications = TRUE"
         )
+        
+        # Создаем краткое уведомление
+        message = f"📰 <b>Новая школьная новость</b>\n\n<b>{self.safe_message(title)}</b>\n\n"
+        
+        # Обрезаем для уведомления
+        if len(content) > 200:
+            message += f"{self.safe_message(content[:200])}..."
+        else:
+            message += self.safe_message(content)
+        
         for user in users:
-            message = f"📰 <b>Новая школьная новость</b>\n\n<b>{self.safe_message(title)}</b>\n\n{self.safe_message(content)}"
-            self.send_message(user[0], message)
+            try:
+                self.send_message(user[0], message)
+            except Exception as e:
+                logger.error(f"Ошибка отправки уведомления пользователю {user[0]}: {e}")
     
     def check_achievements(self, user_id, action_type, value=1):
         """Проверка достижений с защитой от повторной выдачи"""
@@ -856,24 +868,50 @@ class SimpleSchoolBot:
     
     def send_message(self, chat_id, text, reply_markup=None, parse_mode="HTML"):
         try:
-            url = f"{BASE_URL}/sendMessage"
-            data = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": parse_mode
-            }
-            if reply_markup:
-                data["reply_markup"] = reply_markup
-            
+            # Разбиваем длинные сообщения на части
+            if len(text) > 4096:
+                logger.info(f"Сообщение слишком длинное ({len(text)} символов), разбиваем на части")
+                
+                # Отправляем первую часть
+                first_part = text[:4000]
+                result = self._send_message_part(chat_id, first_part, reply_markup, parse_mode)
+                
+                # Отправляем остальные части без клавиатуры
+                remaining_text = text[4000:]
+                chunk_size = 4000
+                for i in range(0, len(remaining_text), chunk_size):
+                    chunk = remaining_text[i:i + chunk_size]
+                    self._send_message_part(chat_id, chunk, None, parse_mode)
+                
+                return result
+            else:
+                return self._send_message_part(chat_id, text, reply_markup, parse_mode)
+                
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения: {e}")
+            return None
+
+    def _send_message_part(self, chat_id, text, reply_markup=None, parse_mode="HTML"):
+        """Вспомогательный метод для отправки части сообщения"""
+        url = f"{BASE_URL}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+        if reply_markup:
+            data["reply_markup"] = reply_markup
+        
+        try:
             response = requests.post(url, json=data, timeout=30)
             result = response.json()
             
             if not result.get('ok'):
-                logger.error(f"Ошибка отправки сообщения: {result}")
+                logger.error(f"Ошибка отправки части сообщения: {result}")
             
             return result
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")
+            logger.error(f"Ошибка отправки части сообщения: {e}")
             return None
 
     def send_document(self, chat_id, document, filename=None):
@@ -1113,10 +1151,10 @@ class SimpleSchoolBot:
             "inline_keyboard": [
                 [{"text": "📰 Последние новости", "callback_data": "recent_news"}],
                 [{"text": "📊 Статистика новостей", "callback_data": "news_stats"}],
+                [{"text": "🔍 Поиск новостей", "callback_data": "news_search"}],
                 [{"text": "⬅️ Назад", "callback_data": "news_back"}]
             ]
         }
-    
     def statistics_keyboard(self):
         return {
             "inline_keyboard": [
@@ -1700,6 +1738,10 @@ class SimpleSchoolBot:
         elif data.startswith("news_edit_field_"):
             self.handle_news_edit_field(chat_id, username, data)
         
+        elif data.startswith("news_full_"):
+            news_id = int(data.replace("news_full_", ""))
+            self.show_full_news(chat_id, user_id, news_id)
+
         elif data == "broadcast_confirm":
             self.execute_broadcast(chat_id, username)
         elif data == "broadcast_cancel":
@@ -2449,21 +2491,75 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "📰 Пока нет новостей.", self.news_keyboard())
             return
         
-        text = "📰 <b>Последние новости</b>\n\n"
-        for news_item in news:
-            news_id, title, content, author, publish_date, target_audience = news_item
-            date_str = self.format_date(publish_date)
-            text += f"<b>{self.safe_message(title)}</b>\n"
-            text += f"{self.safe_message(content[:100])}...\n"
-            text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
-            text += f"🎯 Аудитория: {target_audience}\n\n"
-            
-            self.log_user_activity(user_id, "news_read", f"News: {title}")
+        # Если новостей много, лучше показывать по одной
+        if len(news) > 1:
+            text = "📰 <b>Последние новости</b>\n\n"
+            for news_item in news:
+                news_id, title, content, author, publish_date, target_audience = news_item
+                date_str = self.format_date(publish_date)
+                text += f"<b>{self.safe_message(title)}</b>\n"
+                
+                # Показываем краткий превью для списка
+                preview_length = 150
+                if len(content) > preview_length:
+                    preview = content[:preview_length] + "..."
+                else:
+                    preview = content
+                
+                text += f"{self.safe_message(preview)}\n"
+                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
+                text += f"🎯 Аудитория: {target_audience}\n"
+                text += f"📖 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
+                text += "─" * 30 + "\n\n"
+                
+                self.log_user_activity(user_id, "news_read", f"News: {title}")
+        else:
+            # Если одна новость, показываем полностью
+            for news_item in news:
+                news_id, title, content, author, publish_date, target_audience = news_item
+                date_str = self.format_date(publish_date)
+                text = f"📰 <b>{self.safe_message(title)}</b>\n\n"
+                text += f"{self.safe_message(content)}\n\n"
+                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
+                text += f"🎯 Аудитория: {target_audience}\n"
+                text += "─" * 30 + "\n"
+                
+                self.log_user_activity(user_id, "news_read", f"News: {title}")
         
         # Проверяем достижения после прочтения новости
         self.check_achievements(user_id, "news_read")
         
+        # Отправляем сообщение с автоматической обрезкой если нужно
         self.send_message(chat_id, text, self.news_keyboard())
+
+    def show_full_news(self, chat_id, user_id, news_id):
+        """Показать полную новость по ID"""
+        news = self.get_news_by_id(news_id)
+        
+        if not news:
+            self.send_message(chat_id, "❌ Новость не найдена.", self.news_keyboard())
+            return
+        
+        _, title, content, author, target_audience, publish_date = news
+        date_str = self.format_date(publish_date)
+        
+        text = f"📰 <b>{self.safe_message(title)}</b>\n\n"
+        text += f"{self.safe_message(content)}\n\n"
+        text += f"👤 {self.safe_message(author)}\n"
+        text += f"📅 {date_str}\n"
+        text += f"🎯 Аудитория: {target_audience}\n"
+        
+        self.log_user_activity(user_id, "news_read_full", f"News ID: {news_id}")
+        self.check_achievements(user_id, "news_read")
+        
+        # Кнопка "Назад к списку новостей"
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "⬅️ Назад к новостям", "callback_data": "recent_news"}]
+            ]
+        }
+        
+        self.send_message(chat_id, text, keyboard)
 
     def show_news_statistics(self, chat_id, user_id):
         total_news = self.db.fetchone("SELECT COUNT(*) FROM school_news WHERE is_published = TRUE")
