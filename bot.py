@@ -2607,50 +2607,51 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "📰 Пока нет новостей.", self.news_keyboard())
             return
         
-        text = "📰 <b>Последние новости</b>\n\n"
-        for news_item in news:
-            news_id, title, content, author, publish_date, target_audience = news_item
-            date_str = self.format_date(publish_date)
+        # Если новостей немного, показываем их все полностью
+        if len(news) <= 3:
+            text = "📰 <b>Последние новости</b>\n\n"
+            for news_item in news:
+                news_id, title, content, author, publish_date, target_audience = news_item
+                date_str = self.format_date(publish_date)
+                
+                text += f"📰 <b>{self.safe_message(title)}</b>\n"
+                text += f"{self.safe_message(content)}\n\n"
+                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
+                text += f"🎯 Аудитория: {target_audience}\n"
+                text += "─" * 30 + "\n\n"
+                
+                self.log_user_activity(user_id, "news_read", f"News: {title}")
             
-            text += f"📰 <b>{self.safe_message(title)}</b>\n"
+            # Проверяем достижения после прочтения новости
+            self.check_achievements(user_id, "news_read")
             
-            # Краткий превью
-            preview_length = 150
-            if len(content) > preview_length:
-                preview = content[:preview_length] + "..."
-            else:
-                preview = content
+            self.send_message(chat_id, text, self.news_keyboard())
+        else:
+            # Если много новостей, показываем список с inline кнопками
+            text = "📰 <b>Последние новости</b>\n\nВыберите новость для чтения:\n\n"
             
-            text += f"{self.safe_message(preview)}\n"
-            text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
-            text += f"🎯 Аудитория: {target_audience}\n"
+            for i, news_item in enumerate(news, 1):
+                news_id, title, _, author, publish_date, _ = news_item
+                date_str = self.format_date(publish_date)
+                
+                text += f"{i}. <b>{self.safe_message(title[:50])}</b>\n"
+                text += f"   👤 {author} | 📅 {date_str}\n\n"
             
-            # ❌ НЕПРАВИЛЬНО: text += f"📖 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
-            # ✅ ПРАВИЛЬНО: Используем inline кнопку
-            text += "─" * 30 + "\n\n"
+            # Создаем клавиатуру с кнопками для каждой новости
+            keyboard = {"inline_keyboard": []}
             
-            self.log_user_activity(user_id, "news_read", f"News: {title}")
-        
-        # Проверяем достижения после прочтения новости
-        self.check_achievements(user_id, "news_read")
-        
-        # Создаем клавиатуру с кнопками "Читать полностью" для каждой новости
-        keyboard = {"inline_keyboard": []}
-        
-        for news_item in news:
-            news_id, title, _, _, _, _ = news_item
-            # Обрезаем длинные заголовки для кнопки
-            button_text = title[:30] + "..." if len(title) > 30 else title
+            for news_item in news:
+                news_id, title, _, _, _, _ = news_item
+                button_text = title[:20] + "..." if len(title) > 20 else title
+                keyboard["inline_keyboard"].append(
+                    [{"text": f"📰 {button_text}", "callback_data": f"news_full_{news_id}"}]
+                )
+            
             keyboard["inline_keyboard"].append(
-                [{"text": f"📖 {button_text}", "callback_data": f"news_full_{news_id}"}]
+                [{"text": "⬅️ Назад", "callback_data": "news_back"}]
             )
-        
-        # Добавляем навигационные кнопки
-        keyboard["inline_keyboard"].append(
-            [{"text": "⬅️ Назад", "callback_data": "news_back"}]
-        )
-        
-        self.send_message(chat_id, text, keyboard)
+            
+            self.send_message(chat_id, text, keyboard)
 
     def show_full_news(self, chat_id, user_id, news_id):
         """Показать полную новость по ID"""
