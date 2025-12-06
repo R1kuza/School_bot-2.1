@@ -1719,7 +1719,8 @@ class SimpleSchoolBot:
         username = user.get("username", "")
         data = callback_query["data"]
         
-        logger.info(f"Callback received: {data} from user {username}")
+        # Добавьте это логирование
+        logger.info(f"📲 Callback получен: '{data}' от пользователя {username} (ID: {user_id})")
         
         # Обработка кнопок управления новостями
         if data == "admin_manage_news":
