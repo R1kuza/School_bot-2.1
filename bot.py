@@ -1217,7 +1217,7 @@ class SimpleSchoolBot:
             try:
                 excel_file = pd.ExcelFile(io.BytesIO(file_content))
                 sheet_names = excel_file.sheet_names
-                logger.info(f"Доступные листы в файле: {sheet_names}")
+                logger.info(f"Доступные листы в файе: {sheet_names}")
                 
                 selected_sheet = self._select_sheet(sheet_names, shift)
                 if not selected_sheet:
@@ -1649,6 +1649,7 @@ class SimpleSchoolBot:
         elif data == "my_achievements":
             self.show_user_achievements(chat_id, user_id)
         elif data == "achievement_progress":
+            logger.info(f"Вызов show_achievement_progress для пользователя {user_id}")
             self.show_achievement_progress(chat_id, user_id)
         elif data == "recent_news":
             self.show_recent_news(chat_id, user_id)
@@ -2062,10 +2063,17 @@ class SimpleSchoolBot:
         self.send_message(chat_id, text, self.achievements_keyboard())
 
     def show_achievement_progress(self, chat_id, user_id):
-        # Получаем уникальные достижения (по condition_type)
+        logger.info(f"Показ прогресса достижений для пользователя {user_id}")
+        # Получаем все достижения
         achievements = self.db.fetchall(
-            "SELECT name, condition_type, condition_value FROM achievements GROUP BY condition_type"
+            "SELECT name, condition_type, condition_value FROM achievements"
         )
+        
+        logger.info(f"Найдено достижений в базе: {len(achievements)}")
+        
+        if not achievements:
+            self.send_message(chat_id, "📊 В системе пока нет достижений для отслеживания прогресса.", self.achievements_keyboard())
+            return
         
         text = "📊 <b>Ваш прогресс по достижениям</b>\n\n"
         
@@ -2073,7 +2081,7 @@ class SimpleSchoolBot:
             progress = self.get_user_achievement_progress(user_id, condition_type)
             percentage = min(100, int((progress / condition_value) * 100)) if condition_value > 0 else 100
             progress_bar = "🟩" * (percentage // 20) + "⬜" * (5 - percentage // 20)
-            text += f"<b>{name}</b>: {progress}/{condition_value}\n{progress_bar} {percentage}%\n\n"
+            text += f"<b>{name}</b>\nПрогресс: {progress}/{condition_value}\n{progress_bar} {percentage}%\n\n"
         
         self.send_message(chat_id, text, self.achievements_keyboard())
 
