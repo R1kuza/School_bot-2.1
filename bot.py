@@ -1683,6 +1683,7 @@ class SimpleSchoolBot:
         
         logger.info(f"Callback received: {data} from user {username}")
         
+        # Обработка кнопок управления новостями
         if data == "admin_manage_news":
             self.show_news_management(chat_id, username)
         elif data == "admin_add_news":
@@ -1695,6 +1696,10 @@ class SimpleSchoolBot:
             self.show_all_news(chat_id, username)
         elif data.startswith("news_action_"):
             self.handle_news_action(chat_id, username, data)
+        # Добавляем обработку кнопок редактирования полей новостей
+        elif data.startswith("news_edit_field_"):
+            self.handle_news_edit_field(chat_id, username, data)
+        
         elif data == "broadcast_confirm":
             self.execute_broadcast(chat_id, username)
         elif data == "broadcast_cancel":
@@ -1739,6 +1744,58 @@ class SimpleSchoolBot:
             self.handle_admin_callback(chat_id, username, data)
             
         self.answer_callback_query(callback_query["id"])
+
+    def handle_news_edit_field(self, chat_id, username, data):
+        """Обработка нажатия на кнопку редактирования поля новости"""
+        if not self.is_admin(username):
+            return
+        
+        parts = data.split("_")
+        # Формат: news_edit_field_тип_поля_id_новости
+        field_type = parts[3]  # title, content, author, audience
+        news_id = int(parts[4])
+        
+        # Сохраняем состояние для админа
+        self.admin_states[username] = {
+            "action": "edit_news_field",
+            "field": field_type,
+            "news_id": news_id
+        }
+        
+        # Получаем текущую новость для отображения
+        news = self.get_news_by_id(news_id)
+        if not news:
+            self.send_message(chat_id, "❌ Новость не найдена", self.news_management_inline_keyboard())
+            return
+        
+        _, title, content, author, target_audience, _ = news
+        
+        field_names = {
+            "title": "заголовок",
+            "content": "содержание",
+            "author": "автор",
+            "audience": "аудиторию"
+        }
+        
+        field_values = {
+            "title": title,
+            "content": content,
+            "author": author,
+            "audience": target_audience
+        }
+        
+        field_name = field_names.get(field_type, "поле")
+        current_value = field_values.get(field_type, "")
+        
+        # Отправляем сообщение с запросом на ввод нового значения
+        self.send_message(
+            chat_id,
+            f"📝 <b>Редактирование {field_name}</b>\n\n"
+            f"Текущее значение:\n"
+            f"<code>{self.safe_message(current_value[:200])}</code>\n\n"
+            f"Введите новое значение для {field_name}:",
+            self.cancel_keyboard()
+        )       
     
     def handle_admin_callback(self, chat_id, username, data):
         if not self.is_admin(username):
@@ -1976,6 +2033,28 @@ class SimpleSchoolBot:
                     )
                 else:
                     self.send_message(chat_id, "❌ Ошибка при добавлении новости", self.news_management_inline_keyboard())
+                
+                del self.admin_states[username]
+                return
+            
+            elif state.get("action") == "edit_news_field":
+                news_id = state.get("news_id")
+                field = state.get("field")
+                
+                if field == "title":
+                    self.update_news(news_id, title=text)
+                elif field == "content":
+                    self.update_news(news_id, content=text)
+                elif field == "author":
+                    self.update_news(news_id, author=text)
+                elif field == "audience":
+                    self.update_news(news_id, target_audience=text)
+                
+                self.send_message(
+                    chat_id,
+                    f"✅ Поле '{field}' новости ID {news_id} обновлено",
+                    self.news_management_inline_keyboard()
+                )
                 
                 del self.admin_states[username]
                 return
