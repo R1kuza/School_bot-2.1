@@ -2959,8 +2959,8 @@ class SimpleSchoolBot:
                     
                     file_content = self.download_file(file_info["file_path"])
                     if not file_content:
-                        self.send_message(chat_id, "❌ Ошибка загрузки файла")
-                        return
+                            self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                            return
                     
                     self.send_message(chat_id, f"🔍 Обрабатываю расписание для {shift} смены...")
                     
@@ -3031,21 +3031,35 @@ class SimpleSchoolBot:
                         self.handle_help(chat_id, username)
                     elif text.startswith("/admin_panel"):
                         self.handle_admin_panel(chat_id, username)
+                    
+                    # === ЗДЕСЬ НУЖНО ЗАМЕНИТЬ КОД ===
+                    # Проверяем обычные команды меню для всех пользователей
                     elif text in ["📚 Моё расписание", "🏫 Общее расписание", "🔔 Звонки", "📰 Новости", 
-                                "⚙️ Настройки", "🏆 Достижения", "📈 Статистика", "ℹ️ Помощь"]:
+                                "⚙️ Настройки", "🏆 Достижения", "📈 Статистика", "ℹ️ Помощь", "⬅️ Назад"]:
                         self.handle_main_menu(chat_id, user_id, text, username)
+                    elif self.is_valid_class(text):
+                        self.handle_main_menu(chat_id, user_id, text, username)
+                    # Проверяем команды админа
                     elif text in ["👥 Список пользователей", "❌ Удалить пользователя", "📝 Редактировать расписание", 
-                                  "🏫 Управление классами", "🕧 Управление звонками", "📤 Загрузить Excel", "📊 Статистика", "⬅️ Назад"]:
-                        self.handle_admin_menu(chat_id, username, text)
+                                "🏫 Управление классами", "🕧 Управление звонками", "📤 Загрузить Excel", "📊 Статистика"]:
+                        # Это команды админа - проверяем права
+                        if self.is_admin(username):
+                            self.handle_admin_menu(chat_id, username, text)
+                        else:
+                            self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
                     elif text in ["1 смена", "2 смена"]:
-                        self.handle_shift_selection(chat_id, username, text)
-                    elif text == "⬅️ Назад" or self.is_valid_class(text):
-                        self.handle_main_menu(chat_id, user_id, text, username)
+                        # Команды смены - только для админов
+                        if self.is_admin(username):
+                            self.handle_shift_selection(chat_id, username, text)
+                        else:
+                            self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
                     else:
+                        # Остальные сообщения
                         if not self.get_user(user_id):
                             self.handle_registration_start(chat_id, user_id)
                         else:
                             self.handle_text_message(chat_id, user_id, username, text)
+                    # === КОНЕЦ ЗАМЕНЫ ===
         
         except Exception as e:
             logger.error(f"Ошибка в process_update: {e}")
