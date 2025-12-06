@@ -2961,7 +2961,8 @@ def handle_schedule_input(self, chat_id, username, text):
             logger.error(f"Ошибка в process_update: {e}")
             import traceback
             logger.error(traceback.format_exc())
-    
+
+
     def run(self):
         logger.info("Бот запущен!")
         
