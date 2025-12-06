@@ -249,7 +249,7 @@ class DatabaseManager:
             ("🎓 Первые шаги", "Зарегистрировался в системе", "🎓", "registration", 1),
             ("📚 Любознательный", "Посмотрел расписание 10 раз", "📚", "schedule_views", 10),
             ("⭐ Активный ученик", "Использовал бота 50 раз", "⭐", "total_actions", 50),
-            ("📰 Информированный", "Прочитал все новости", "📰", "news_read", 10),
+            ("📰 Информированный", "Прочитал 5 новостей", "📰", "news_read", 5),
             ("🌦️ Метеоролог", "Включил уведомления о погоде", "🌦️", "weather_enabled", 1)
         ]
         
@@ -315,7 +315,7 @@ class SimpleSchoolBot:
         self.admin_states[username] = {"action": "broadcast_waiting_message"}
         self.send_message(
             chat_id,
-            "📢 <b>Система рассылки сообений</b>\n\n"
+            "📢 <b>Система рассылки сообщений</b>\n\n"
             "Отправьте сообщение для рассылки всем пользователям.\n\n"
             "Вы можете использовать HTML-разметку:\n"
             "• <code>&lt;b&gt;жирный текст&lt;/b&gt;</code>\n"
@@ -362,53 +362,75 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "❌ Ошибка: сообщение не найдено")
             return
             
-        broadcast_id = self.db.execute(
-            "INSERT INTO broadcast_messages (admin_username, message_text, status) VALUES (?, ?, ?) RETURNING id",
-            (username, message_text, 'sending')
-        ).fetchone()[0]
-        
-        self.send_message(chat_id, "🔄 Начинаю рассылку сообщений...")
-        
-        users = self.db.fetchall("SELECT user_id FROM users")
-        total_users = len(users)
-        success_count = 0
-        failed_count = 0
-        
-        for i, user in enumerate(users):
-            user_id = user[0]
+        try:
+            # Проверяем подключение к базе данных
+            users = self.db.fetchall("SELECT user_id FROM users")
+            if not users:
+                self.send_message(chat_id, "❌ Нет пользователей для рассылки")
+                return
             
-            try:
-                self.send_message(user_id, message_text)
-                success_count += 1
+            total_users = len(users)
+            success_count = 0
+            failed_count = 0
+            
+            self.send_message(chat_id, f"🔄 Начинаю рассылку сообщений... Всего пользователей: {total_users}")
+            
+            # Отправляем сообщение себе (админу) для теста
+            test_result = self.send_message(chat_id, f"📢 <b>Тест рассылки</b>\n\n{message_text}")
+            if not test_result or not test_result.get('ok'):
+                self.send_message(chat_id, "❌ Ошибка: не удалось отправить тестовое сообщение. Проверьте форматирование HTML.")
+                return
+            
+            for i, user in enumerate(users):
+                user_id = user[0]
                 
-                if i % 10 == 0:
-                    self.db.execute(
-                        "UPDATE broadcast_messages SET sent_count = ?, failed_count = ? WHERE id = ?",
-                        (success_count, failed_count, broadcast_id)
-                    )
-                
-                time.sleep(0.1)
-                
-            except Exception as e:
-                logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-                failed_count += 1
+                try:
+                    # Проверяем, что user_id является числом
+                    if isinstance(user_id, (int, float)):
+                        result = self.send_message(int(user_id), message_text)
+                        if result and result.get('ok'):
+                            success_count += 1
+                        else:
+                            failed_count += 1
+                            logger.error(f"Ошибка отправки пользователю {user_id}: {result}")
+                    else:
+                        failed_count += 1
+                        logger.error(f"Некорректный user_id: {user_id}")
+                    
+                    if i % 10 == 0 and i > 0:
+                        progress = (i + 1) * 100 // total_users
+                        self.send_message(chat_id, f"📊 Прогресс рассылки: {progress}% ({i+1}/{total_users})")
+                    
+                    time.sleep(0.2)  # Увеличиваем задержку для избежания лимитов Telegram
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+                    failed_count += 1
+                    time.sleep(0.5)
+            
+            # Сохраняем статистику
+            self.db.execute(
+                "INSERT INTO broadcast_messages (admin_username, message_text, sent_count, failed_count, status) VALUES (?, ?, ?, ?, ?)",
+                (username, message_text, success_count, failed_count, 'completed')
+            )
+            
+            report = (
+                f"📢 <b>Рассылка завершена</b>\n\n"
+                f"✅ Успешно отправлено: {success_count}\n"
+                f"❌ Не удалось отправить: {failed_count}\n"
+                f"👥 Всего пользователей: {total_users}\n"
+                f"📊 Успешных: {success_count * 100 // total_users if total_users > 0 else 0}%"
+            )
+            
+            self.send_message(chat_id, report)
+            
+        except Exception as e:
+            logger.error(f"Ошибка выполнения рассылки: {e}")
+            self.send_message(chat_id, f"❌ Ошибка при выполнении рассылки: {str(e)}")
         
-        self.db.execute(
-            "UPDATE broadcast_messages SET sent_count = ?, failed_count = ?, status = ? WHERE id = ?",
-            (success_count, failed_count, 'completed', broadcast_id)
-        )
-        
-        report = (
-            f"📢 <b>Рассылка завершена</b>\n\n"
-            f"✅ Успешно отправлено: {success_count}\n"
-            f"❌ Не удалось отправить: {failed_count}\n"
-            f"👥 Всего пользователей: {total_users}"
-        )
-        
-        self.send_message(chat_id, report)
-        
-        if username in self.admin_states:
-            del self.admin_states[username]
+        finally:
+            if username in self.admin_states:
+                del self.admin_states[username]
     
     def get_broadcast_history(self, chat_id):
         broadcasts = self.db.fetchall(
@@ -538,8 +560,6 @@ class SimpleSchoolBot:
                 logger.info(f"🎉 Пользователь {user_id} выполнил условие для достижения '{name}'")
                 # Выдаем достижение
                 self.grant_achievement(user_id, achievement_id, name, description, icon)
-            else:
-                logger.info(f"⏳ Пользователь {user_id} еще не выполнил условие для '{name}' ({user_progress}/{condition_value})")
     
     def get_user_achievement_progress(self, user_id, condition_type):
         if condition_type == "registration":
@@ -584,23 +604,46 @@ class SimpleSchoolBot:
             logger.info(f"⚠️ Достижение '{name}' уже есть у пользователя {user_id}, пропускаем")
             return
         
-        # Добавляем достижение
-        self.db.execute(
-            "INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)",
-            (user_id, achievement_id)
-        )
-        
-        # Логируем действие
-        logger.info(f"✅ Достижение '{name}' успешно выдано пользователю {user_id}")
-        
-        # Проверяем настройки уведомлений
-        settings = self.get_notification_settings(user_id)
-        if settings.get('achievement_notifications'):
-            message = f"{icon} <b>Новое достижение!</b>\n\n<b>{name}</b>\n{description}"
-            self.send_message(user_id, message)
-            logger.info(f"📨 Уведомление о достижении отправлено пользователю {user_id}")
-        else:
-            logger.info(f"🔕 Уведомления о достижениях отключены для пользователя {user_id}")
+        try:
+            # Добавляем достижение с обработкой конфликта
+            if self.db.db_type == 'postgresql':
+                query = """
+                    INSERT INTO user_achievements (user_id, achievement_id) 
+                    VALUES (%s, %s) 
+                    ON CONFLICT (user_id, achievement_id) DO NOTHING
+                    RETURNING 1
+                """
+            else:
+                query = """
+                    INSERT OR IGNORE INTO user_achievements (user_id, achievement_id) 
+                    VALUES (?, ?)
+                """
+            
+            result = self.db.execute(query, (user_id, achievement_id))
+            
+            # Проверяем, была ли вставлена новая запись
+            if self.db.db_type == 'postgresql':
+                inserted = result.fetchone() is not None
+            else:
+                inserted = result.rowcount > 0
+            
+            if inserted:
+                # Логируем действие
+                logger.info(f"✅ Достижение '{name}' успешно выдано пользователю {user_id}")
+                
+                # Проверяем настройки уведомлений
+                settings = self.get_notification_settings(user_id)
+                if settings.get('achievement_notifications'):
+                    message = f"{icon} <b>Новое достижение!</b>\n\n<b>{name}</b>\n{description}"
+                    self.send_message(user_id, message)
+                    logger.info(f"📨 Уведомление о достижении отправлено пользователю {user_id}")
+                else:
+                    logger.info(f"🔕 Уведомления о достижениях отключены для пользователя {user_id}")
+            else:
+                logger.info(f"⏩ Достижение '{name}' уже было выдано пользователю {user_id} ранее")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при выдаче достижения: {e}")
     
     def get_user_achievements(self, user_id):
         return self.db.fetchall("""
@@ -613,12 +656,16 @@ class SimpleSchoolBot:
     
     def get_weather(self):
         if not WEATHER_API_KEY:
-            return "🌤️ Погода в Самаре: сервис погоды не настроен"
+            return "🌤️ Погода в Отрадном: сервис погоды не настроен"
         
         try:
-            url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Samara&lang=ru"
+            # Изменено на город Отрадный
+            url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Otradny,Russia&lang=ru"
             response = requests.get(url, timeout=10)
             data = response.json()
+            
+            if 'error' in data:
+                return f"🌤️ Погода в Отрадном: {data['error']['message']}"
             
             current = data['current']
             temp = current['temp_c']
@@ -626,7 +673,7 @@ class SimpleSchoolBot:
             humidity = current['humidity']
             wind = current['wind_kph']
             
-            return (f"🌤️ <b>Погода в Самаре</b>\n\n"
+            return (f"🌤️ <b>Погода в Отрадном</b>\n\n"
                    f"🌡️ Температура: {temp}°C\n"
                    f"☁️ Состояние: {condition}\n"
                    f"💧 Влажность: {humidity}%\n"
@@ -634,22 +681,47 @@ class SimpleSchoolBot:
         
         except Exception as e:
             logger.error(f"Ошибка получения погоды: {e}")
-            return "🌤️ Погода в Самаре: временно недоступна"
+            return "🌤️ Погода в Отрадном: временно недоступна"
     
     def send_weather_notifications(self):
-        users = self.db.fetchall(
-            "SELECT user_id FROM notification_settings WHERE weather_notifications = TRUE"
-        )
-        weather_message = self.get_weather()
-        
-        for user in users:
-            self.send_message(user[0], weather_message)
+        try:
+            users = self.db.fetchall(
+                "SELECT user_id FROM notification_settings WHERE weather_notifications = TRUE"
+            )
+            
+            if not users:
+                logger.info("Нет пользователей с включенными уведомлениями о погоде")
+                return
+            
+            weather_message = self.get_weather()
+            logger.info(f"Отправка уведомлений о погоде {len(users)} пользователям")
+            
+            success_count = 0
+            failed_count = 0
+            
+            for user in users:
+                try:
+                    user_id = user[0]
+                    self.send_message(user_id, weather_message)
+                    success_count += 1
+                    time.sleep(0.1)  # Небольшая задержка между отправками
+                except Exception as e:
+                    logger.error(f"Ошибка отправки погоды пользователю {user_id}: {e}")
+                    failed_count += 1
+            
+            logger.info(f"Уведомления о погоде отправлены: успешно {success_count}, неудачно {failed_count}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомлений о погоде: {e}")
     
     def log_user_activity(self, user_id, action_type, details=None):
-        self.db.execute(
-            "INSERT INTO user_activity (user_id, action_type, details) VALUES (?, ?, ?)",
-            (user_id, action_type, details)
-        )
+        try:
+            self.db.execute(
+                "INSERT INTO user_activity (user_id, action_type, details) VALUES (?, ?, ?)",
+                (user_id, action_type, details)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка логирования активности: {e}")
     
     def get_user_statistics(self, user_id):
         total_actions = self.db.fetchone(
@@ -687,9 +759,13 @@ class SimpleSchoolBot:
             return "неизвестно"
         
         if hasattr(date_obj, 'strftime'):
-            return date_obj.strftime("%Y-%m-%d")
+            return date_obj.strftime("%d.%m.%Y %H:%M")
         elif isinstance(date_obj, str):
-            return date_obj.split()[0]
+            try:
+                dt = datetime.fromisoformat(date_obj.replace('Z', '+00:00'))
+                return dt.strftime("%d.%m.%Y %H:%M")
+            except:
+                return date_obj.split()[0]
         else:
             return str(date_obj)
     
@@ -697,8 +773,9 @@ class SimpleSchoolBot:
         if not text:
             return ""
         text = str(text)
-        text = re.sub(r'<[^>]+>', '', text)
-        text = escape(text)
+        # Убираем только опасные теги, но сохраняем безопасные HTML
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]*>', lambda m: m.group(0) if m.group(0) in ['<b>', '</b>', '<i>', '</i>', '<code>', '</code>'] else '', text)
         return text
     
     def truncate_message(self, text, max_length=MAX_MESSAGE_LENGTH):
@@ -706,21 +783,24 @@ class SimpleSchoolBot:
             return text
         return text[:max_length-3] + "..."
     
-    def send_message(self, chat_id, text, reply_markup=None):
-        safe_text = self.truncate_message(self.safe_message(text))
-        
-        url = f"{BASE_URL}/sendMessage"
-        data = {
-            "chat_id": chat_id,
-            "text": safe_text,
-            "parse_mode": "HTML"
-        }
-        if reply_markup:
-            data["reply_markup"] = reply_markup
-        
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode="HTML"):
         try:
+            url = f"{BASE_URL}/sendMessage"
+            data = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode
+            }
+            if reply_markup:
+                data["reply_markup"] = reply_markup
+            
             response = requests.post(url, json=data, timeout=30)
-            return response.json()
+            result = response.json()
+            
+            if not result.get('ok'):
+                logger.error(f"Ошибка отправки сообщения: {result}")
+            
+            return result
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения: {e}")
             return None
@@ -826,6 +906,10 @@ class SimpleSchoolBot:
                 "INSERT INTO users (user_id, full_name, class, username) VALUES (?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, class = EXCLUDED.class, username = EXCLUDED.username",
                 (user_id, full_name, class_name, username)
             )
+            
+            # Проверяем достижение при регистрации
+            self.check_achievements(user_id, "registration")
+            
             return True
         except Exception as e:
             logger.error(f"Ошибка создания пользователя: {e}")
@@ -917,7 +1001,7 @@ class SimpleSchoolBot:
                 [{"text": "🏫 Управление классами", "callback_data": "admin_manage_classes"}],
                 [{"text": "🕧 Управление звонками", "callback_data": "admin_bells"}],
                 [{"text": "📤 Загрузить Excel", "callback_data": "admin_upload_excel"}],
-                [{"text": "📢 Рассылка сообщений", "callback_data": "admin_broadcast_menu"}],
+                [{"text": "📢 Рассылка сообщений", "callback_data": "admin_broadcast"}],
                 [{"text": "📊 Статистика", "callback_data": "admin_stats"}],
                 [{"text": "⬅️ Назад", "callback_data": "admin_back"}]
             ]
@@ -1109,7 +1193,7 @@ class SimpleSchoolBot:
                 logger.info(f"Выбран лист: '{selected_sheet}'")
                 
                 df = pd.read_excel(io.BytesIO(file_content), sheet_name=selected_sheet, header=None)
-                logger.info(f"Размер таблицы: {df.shape} (строк: {df.shape[0]}, колонок: {df.shape[1]})")
+                logger.info(f"Размер таблиции: {df.shape} (строк: {df.shape[0]}, колонок: {df.shape[1]})")
                 
                 self._log_file_structure(df, selected_sheet)
                 
@@ -1517,12 +1601,8 @@ class SimpleSchoolBot:
         
         logger.info(f"Callback received: {data} from user {username}")
         
-        if data == "admin_broadcast_menu":
-            self.handle_broadcast_menu(chat_id, username)
-        elif data == "admin_broadcast":
+        if data == "admin_broadcast":
             self.start_broadcast(chat_id, username)
-        elif data == "admin_broadcast_history":
-            self.get_broadcast_history(chat_id)
         elif data == "broadcast_confirm":
             self.execute_broadcast(chat_id, username)
         elif data == "broadcast_cancel":
@@ -1566,17 +1646,6 @@ class SimpleSchoolBot:
             self.handle_admin_callback(chat_id, username, data)
             
         self.answer_callback_query(callback_query["id"])
-    
-    def handle_broadcast_menu(self, chat_id, username):
-        if not self.is_admin(username):
-            return
-            
-        text = (
-            "📢 <b>Система рассылки сообщений</b>\n\n"
-            "Здесь вы можете отправить сообщение всем пользователям бота.\n\n"
-            "⚠️ <b>Внимание:</b> Рассылка будет отправлена всем зарегистрированным пользователям."
-        )
-        self.send_message(chat_id, text)
     
     def handle_admin_callback(self, chat_id, username, data):
         if not self.is_admin(username):
@@ -1671,8 +1740,6 @@ class SimpleSchoolBot:
                 "INSERT INTO user_activity (user_id, action_type, details) VALUES (?, ?, ?)",
                 (user_id, "registration", f"class: {class_name}")
             )
-            # Проверяем достижения при регистрации
-            self.check_achievements(user_id, "registration")
         else:
             self.send_message(chat_id, "❌ Ошибка регистрации", self.main_menu_keyboard())
         
@@ -1938,7 +2005,7 @@ class SimpleSchoolBot:
         # Логируем изменение
         logger.info(f"⚙️ Пользователь {user_id} изменил настройку {setting_key}: {previous_value} -> {settings[setting_key]}")
         
-        # Проверяем достижения только для weather_enabled и только если ВКЛЮЧИЛИ (а не выключили)
+        # Проверяем достижения только для weather_enabled и только если ВКЛЮЧИЛИ
         if setting_key == "weather_notifications" and settings[setting_key] and not previous_value:
             logger.info(f"🔍 Проверка достижения 'weather_enabled' для пользователя {user_id}")
             self.check_achievements(user_id, "weather_enabled")
@@ -2492,6 +2559,9 @@ class SimpleSchoolBot:
                             return
                         elif state.get("action") == "select_shift":
                             self.handle_shift_selection(chat_id, username, text)
+                            return
+                        elif state.get("action") == "broadcast_waiting_message":
+                            self.handle_broadcast_message(chat_id, username, text)
                             return
                     
                     if user_id in self.user_states:
