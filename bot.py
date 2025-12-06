@@ -2607,46 +2607,50 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "📰 Пока нет новостей.", self.news_keyboard())
             return
         
-        # Если новостей много, лучше показывать по одной
-        if len(news) > 1:
-            text = "📰 <b>Последние новости</b>\n\n"
-            for news_item in news:
-                news_id, title, content, author, publish_date, target_audience = news_item
-                date_str = self.format_date(publish_date)
-                text += f"<b>{self.safe_message(title)}</b>\n"
-                
-                # Показываем краткий превью для списка
-                preview_length = 150
-                if len(content) > preview_length:
-                    preview = content[:preview_length] + "..."
-                else:
-                    preview = content
-                
-                text += f"{self.safe_message(preview)}\n"
-                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
-                text += f"🎯 Аудитория: {target_audience}\n"
-                text += f"📖 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
-                text += "─" * 30 + "\n\n"
-                
-                self.log_user_activity(user_id, "news_read", f"News: {title}")
-        else:
-            # Если одна новость, показываем полностью
-            for news_item in news:
-                news_id, title, content, author, publish_date, target_audience = news_item
-                date_str = self.format_date(publish_date)
-                text = f"📰 <b>{self.safe_message(title)}</b>\n\n"
-                text += f"{self.safe_message(content)}\n\n"
-                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
-                text += f"🎯 Аудитория: {target_audience}\n"
-                text += "─" * 30 + "\n"
-                
-                self.log_user_activity(user_id, "news_read", f"News: {title}")
+        text = "📰 <b>Последние новости</b>\n\n"
+        for news_item in news:
+            news_id, title, content, author, publish_date, target_audience = news_item
+            date_str = self.format_date(publish_date)
+            
+            text += f"📰 <b>{self.safe_message(title)}</b>\n"
+            
+            # Краткий превью
+            preview_length = 150
+            if len(content) > preview_length:
+                preview = content[:preview_length] + "..."
+            else:
+                preview = content
+            
+            text += f"{self.safe_message(preview)}\n"
+            text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
+            text += f"🎯 Аудитория: {target_audience}\n"
+            
+            # ❌ НЕПРАВИЛЬНО: text += f"📖 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
+            # ✅ ПРАВИЛЬНО: Используем inline кнопку
+            text += "─" * 30 + "\n\n"
+            
+            self.log_user_activity(user_id, "news_read", f"News: {title}")
         
         # Проверяем достижения после прочтения новости
         self.check_achievements(user_id, "news_read")
         
-        # Отправляем сообщение с автоматической обрезкой если нужно
-        self.send_message(chat_id, text, self.news_keyboard())
+        # Создаем клавиатуру с кнопками "Читать полностью" для каждой новости
+        keyboard = {"inline_keyboard": []}
+        
+        for news_item in news:
+            news_id, title, _, _, _, _ = news_item
+            # Обрезаем длинные заголовки для кнопки
+            button_text = title[:30] + "..." if len(title) > 30 else title
+            keyboard["inline_keyboard"].append(
+                [{"text": f"📖 {button_text}", "callback_data": f"news_full_{news_id}"}]
+            )
+        
+        # Добавляем навигационные кнопки
+        keyboard["inline_keyboard"].append(
+            [{"text": "⬅️ Назад", "callback_data": "news_back"}]
+        )
+        
+        self.send_message(chat_id, text, keyboard)
 
     def show_full_news(self, chat_id, user_id, news_id):
         """Показать полную новость по ID"""
@@ -2668,10 +2672,12 @@ class SimpleSchoolBot:
         self.log_user_activity(user_id, "news_read_full", f"News ID: {news_id}")
         self.check_achievements(user_id, "news_read")
         
-        # Кнопка "Назад к списку новостей"
+        # Кнопки навигации
         keyboard = {
             "inline_keyboard": [
-                [{"text": "⬅️ Назад к новостям", "callback_data": "recent_news"}]
+                [{"text": "📰 К списку новостей", "callback_data": "recent_news"}],
+                [{"text": "🔍 Поиск новостей", "callback_data": "news_search"}],
+                [{"text": "⬅️ Главное меню", "callback_data": "news_back"}]
             ]
         }
         
