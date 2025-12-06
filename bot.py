@@ -1945,48 +1945,53 @@ class SimpleSchoolBot:
             del self.user_states[user_id]
             return
         
-        # Показываем результаты
+        # Создаем сообщение с результатами
         text = f"🔍 <b>Результаты поиска по запросу: '{query}'</b>\n\n"
-        text += f"Найдено новостей: {len(news_results)}\n\n"
+        text += f"📊 Найдено новостей: {len(news_results)}\n\n"
+        
+        # Создаем клавиатуру с кнопками для каждой новости
+        keyboard = {"inline_keyboard": []}
         
         for news_item in news_results:
             news_id, title, content, author, publish_date, target_audience = news_item
             date_str = self.format_date(publish_date)
             
-            # Находим позицию запроса в тексте для выделения
+            # Добавляем информацию о новости в текст
+            text += f"📰 <b>{self.safe_message(title)}</b>\n"
+            text += f"📅 {date_str} | 👤 {author}\n"
+            text += f"🎯 Аудитория: {target_audience}\n"
+            
+            # Создаем превью с найденным запросом
             query_lower = query.lower()
-            title_lower = title.lower()
             content_lower = content.lower()
             
-            # Создаем превью с выделением
-            preview = ""
-            if query_lower in title_lower:
-                preview = title
-            elif query_lower in content_lower:
+            if query_lower in content_lower:
                 pos = content_lower.find(query_lower)
-                start = max(0, pos - 50)
-                end = min(len(content), pos + len(query) + 50)
+                start = max(0, pos - 30)
+                end = min(len(content), pos + len(query) + 30)
                 preview = content[start:end]
                 if start > 0:
                     preview = "..." + preview
                 if end < len(content):
                     preview = preview + "..."
+                text += f"📝 {self.safe_message(preview)}\n"
             
-            text += f"📰 <b>{self.safe_message(title)}</b>\n"
-            text += f"📅 {date_str} | 👤 {author}\n"
-            text += f"🎯 Аудитория: {target_audience}\n"
-            text += f"📝 {self.safe_message(preview[:200])}\n"
-            text += f"🔗 <a href='https://t.me/share/url?url=/news_{news_id}'>Читать полностью</a>\n"
             text += "─" * 30 + "\n\n"
+            
+            # Добавляем кнопку для чтения полной новости
+            button_text = f"📖 {title[:20]}..." if len(title) > 20 else f"📖 {title}"
+            keyboard["inline_keyboard"].append(
+                [{"text": button_text, "callback_data": f"news_full_{news_id}"}]
+            )
         
-        # Добавляем навигацию
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔍 Новый поиск", "callback_data": "news_search"}],
-                [{"text": "📰 Все новости", "callback_data": "recent_news"}],
-                [{"text": "⬅️ Назад", "callback_data": "news_back"}]
-            ]
-        }
+        # Добавляем навигационные кнопки
+        keyboard["inline_keyboard"].append([
+            {"text": "🔍 Новый поиск", "callback_data": "news_search"},
+            {"text": "📰 Все новости", "callback_data": "recent_news"}
+        ])
+        keyboard["inline_keyboard"].append([
+            {"text": "⬅️ Назад", "callback_data": "news_back"}
+        ])
         
         self.send_message(chat_id, text, keyboard)
         del self.user_states[user_id]
@@ -2601,57 +2606,52 @@ class SimpleSchoolBot:
         self.send_message(chat_id, text, self.achievements_keyboard())
 
     def show_recent_news(self, chat_id, user_id):
+        """Показать последние новости с inline кнопками"""
         news = self.get_news(limit=5)
         
         if not news:
             self.send_message(chat_id, "📰 Пока нет новостей.", self.news_keyboard())
             return
         
-        # Если новостей немного, показываем их все полностью
-        if len(news) <= 3:
-            text = "📰 <b>Последние новости</b>\n\n"
-            for news_item in news:
-                news_id, title, content, author, publish_date, target_audience = news_item
-                date_str = self.format_date(publish_date)
-                
-                text += f"📰 <b>{self.safe_message(title)}</b>\n"
-                text += f"{self.safe_message(content)}\n\n"
-                text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
-                text += f"🎯 Аудитория: {target_audience}\n"
-                text += "─" * 30 + "\n\n"
-                
-                self.log_user_activity(user_id, "news_read", f"News: {title}")
+        text = "📰 <b>Последние новости</b>\n\n"
+        
+        # Создаем клавиатуру с кнопками
+        keyboard = {"inline_keyboard": []}
+        
+        for news_item in news:
+            news_id, title, content, author, publish_date, target_audience = news_item
+            date_str = self.format_date(publish_date)
             
-            # Проверяем достижения после прочтения новости
-            self.check_achievements(user_id, "news_read")
+            # Показываем краткую информацию
+            text += f"📰 <b>{self.safe_message(title)}</b>\n"
+            text += f"👤 {author} | 📅 {date_str}\n"
             
-            self.send_message(chat_id, text, self.news_keyboard())
-        else:
-            # Если много новостей, показываем список с inline кнопками
-            text = "📰 <b>Последние новости</b>\n\nВыберите новость для чтения:\n\n"
+            # Краткое превью
+            preview = content[:80] + "..." if len(content) > 80 else content
+            text += f"📝 {preview}\n"
+            text += "─" * 30 + "\n\n"
             
-            for i, news_item in enumerate(news, 1):
-                news_id, title, _, author, publish_date, _ = news_item
-                date_str = self.format_date(publish_date)
-                
-                text += f"{i}. <b>{self.safe_message(title[:50])}</b>\n"
-                text += f"   👤 {author} | 📅 {date_str}\n\n"
-            
-            # Создаем клавиатуру с кнопками для каждой новости
-            keyboard = {"inline_keyboard": []}
-            
-            for news_item in news:
-                news_id, title, _, _, _, _ = news_item
-                button_text = title[:20] + "..." if len(title) > 20 else title
-                keyboard["inline_keyboard"].append(
-                    [{"text": f"📰 {button_text}", "callback_data": f"news_full_{news_id}"}]
-                )
-            
+            # Кнопка для чтения полной новости
+            button_text = f"📖 Читать: {title[:15]}..." if len(title) > 15 else f"📖 {title}"
             keyboard["inline_keyboard"].append(
-                [{"text": "⬅️ Назад", "callback_data": "news_back"}]
+                [{"text": button_text, "callback_data": f"news_full_{news_id}"}]
             )
             
-            self.send_message(chat_id, text, keyboard)
+            self.log_user_activity(user_id, "news_read", f"News: {title}")
+        
+        # Добавляем навигационные кнопки
+        keyboard["inline_keyboard"].append([
+            {"text": "🔍 Поиск новостей", "callback_data": "news_search"},
+            {"text": "📊 Статистика", "callback_data": "news_stats"}
+        ])
+        keyboard["inline_keyboard"].append([
+            {"text": "⬅️ Назад", "callback_data": "news_back"}
+        ])
+        
+        # Проверяем достижения
+        self.check_achievements(user_id, "news_read")
+        
+        self.send_message(chat_id, text, keyboard)
 
     def show_full_news(self, chat_id, user_id, news_id):
         """Показать полную новость по ID"""
