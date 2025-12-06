@@ -538,7 +538,7 @@ class SimpleSchoolBot:
     def get_news(self, limit=10, for_class=None):
         if for_class:
             return self.db.fetchall(
-                """SELECT title, content, author, publish_date 
+                """SELECT id, title, content, author, publish_date, target_audience
                 FROM school_news 
                 WHERE (target_audience = ? OR target_audience = 'all') AND is_published = TRUE
                 ORDER BY publish_date DESC LIMIT ?""",
@@ -546,12 +546,49 @@ class SimpleSchoolBot:
             )
         else:
             return self.db.fetchall(
-                """SELECT title, content, author, publish_date 
+                """SELECT id, title, content, author, publish_date, target_audience
                 FROM school_news 
                 WHERE is_published = TRUE
                 ORDER BY publish_date DESC LIMIT ?""",
                 (limit,)
             )
+    
+    def get_news_by_id(self, news_id):
+        return self.db.fetchone(
+            "SELECT id, title, content, author, target_audience, publish_date FROM school_news WHERE id = ?",
+            (news_id,)
+        )
+    
+    def update_news(self, news_id, title=None, content=None, author=None, target_audience=None):
+        try:
+            if title is not None:
+                self.db.execute("UPDATE school_news SET title = ? WHERE id = ?", (title, news_id))
+            if content is not None:
+                self.db.execute("UPDATE school_news SET content = ? WHERE id = ?", (content, news_id))
+            if author is not None:
+                self.db.execute("UPDATE school_news SET author = ? WHERE id = ?", (author, news_id))
+            if target_audience is not None:
+                self.db.execute("UPDATE school_news SET target_audience = ? WHERE id = ?", (target_audience, news_id))
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка обновления новости: {e}")
+            return False
+    
+    def delete_news(self, news_id):
+        try:
+            self.db.execute("DELETE FROM school_news WHERE id = ?", (news_id,))
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка удаления новости: {e}")
+            return False
+    
+    def get_all_news(self, limit=50):
+        return self.db.fetchall(
+            """SELECT id, title, content, author, target_audience, publish_date 
+            FROM school_news 
+            ORDER BY publish_date DESC LIMIT ?""",
+            (limit,)
+        )
     
     def notify_about_news(self, title, content):
         users = self.db.fetchall(
@@ -1020,8 +1057,7 @@ class SimpleSchoolBot:
                 [{"text": "📚 Моё расписание"}, {"text": "🏫 Общее расписание"}],
                 [{"text": "🔔 Звонки"}, {"text": "📰 Новости"}],
                 [{"text": "⚙️ Настройки"}, {"text": "🏆 Достижения"}],
-                [{"text": "📈 Статистика"}],
-                [{"text": "ℹ️ Помощь"}]
+                [{"text": "📈 Статистика"}, {"text": "ℹ️ Помощь"}]
             ],
             "resize_keyboard": True
         }
@@ -1035,9 +1071,21 @@ class SimpleSchoolBot:
                 [{"text": "🏫 Управление классами", "callback_data": "admin_manage_classes"}],
                 [{"text": "🕧 Управление звонками", "callback_data": "admin_bells"}],
                 [{"text": "📤 Загрузить Excel", "callback_data": "admin_upload_excel"}],
+                [{"text": "📰 Управление новостями", "callback_data": "admin_manage_news"}],
                 [{"text": "📢 Рассылка сообщений", "callback_data": "admin_broadcast"}],
                 [{"text": "📊 Статистика", "callback_data": "admin_stats"}],
                 [{"text": "⬅️ Назад", "callback_data": "admin_back"}]
+            ]
+        }
+    
+    def news_management_inline_keyboard(self):
+        return {
+            "inline_keyboard": [
+                [{"text": "➕ Добавить новость", "callback_data": "admin_add_news"}],
+                [{"text": "📝 Редактировать новость", "callback_data": "admin_edit_news"}],
+                [{"text": "🗑️ Удалить новость", "callback_data": "admin_delete_news"}],
+                [{"text": "📋 Список новостей", "callback_data": "admin_list_news"}],
+                [{"text": "⬅️ Назад в админку", "callback_data": "admin_back"}]
             ]
         }
     
@@ -1635,8 +1683,18 @@ class SimpleSchoolBot:
         
         logger.info(f"Callback received: {data} from user {username}")
         
-        if data == "admin_broadcast":
-            self.start_broadcast(chat_id, username)
+        if data == "admin_manage_news":
+            self.show_news_management(chat_id, username)
+        elif data == "admin_add_news":
+            self.start_add_news(chat_id, username)
+        elif data == "admin_edit_news":
+            self.start_edit_news(chat_id, username)
+        elif data == "admin_delete_news":
+            self.start_delete_news(chat_id, username)
+        elif data == "admin_list_news":
+            self.show_all_news(chat_id, username)
+        elif data.startswith("news_action_"):
+            self.handle_news_action(chat_id, username, data)
         elif data == "broadcast_confirm":
             self.execute_broadcast(chat_id, username)
         elif data == "broadcast_cancel":
@@ -1708,6 +1766,8 @@ class SimpleSchoolBot:
             self.admin_states[username] = {"action": "select_shift"}
         elif data == "admin_stats":
             self.show_statistics(chat_id)
+        elif data == "admin_broadcast":
+            self.start_broadcast(chat_id, username)
         elif data == "admin_back":
             if username in self.admin_states:
                 del self.admin_states[username]
@@ -1721,6 +1781,145 @@ class SimpleSchoolBot:
         elif data == "admin_view_bells":
             self.show_all_bells(chat_id)
     
+    def show_news_management(self, chat_id, username):
+        if not self.is_admin(username):
+            self.send_message(chat_id, "❌ У вас нет прав для управления новостями")
+            return
+        
+        text = "📰 <b>Управление новостями</b>\n\nВыберите действие:"
+        self.send_message(chat_id, text, self.news_management_inline_keyboard())
+    
+    def start_add_news(self, chat_id, username):
+        if not self.is_admin(username):
+            return
+        
+        self.admin_states[username] = {"action": "add_news_title"}
+        self.send_message(
+            chat_id,
+            "📝 <b>Добавление новой новости</b>\n\n"
+            "Введите заголовок новости:",
+            self.cancel_keyboard()
+        )
+    
+    def start_edit_news(self, chat_id, username):
+        if not self.is_admin(username):
+            return
+        
+        news_list = self.get_all_news(limit=20)
+        if not news_list:
+            self.send_message(chat_id, "❌ Нет новостей для редактирования", self.news_management_inline_keyboard())
+            return
+        
+        keyboard = []
+        for news in news_list:
+            news_id, title, _, author, _, publish_date = news
+            date_str = self.format_date(publish_date)
+            button_text = f"{news_id}. {title[:30]}... ({author}, {date_str})"
+            keyboard.append([{"text": button_text, "callback_data": f"news_action_edit_{news_id}"}])
+        
+        keyboard.append([{"text": "⬅️ Назад", "callback_data": "admin_manage_news"}])
+        
+        self.send_message(
+            chat_id,
+            "📝 <b>Редактирование новости</b>\n\n"
+            "Выберите новость для редактирования:",
+            {"inline_keyboard": keyboard}
+        )
+    
+    def start_delete_news(self, chat_id, username):
+        if not self.is_admin(username):
+            return
+        
+        news_list = self.get_all_news(limit=20)
+        if not news_list:
+            self.send_message(chat_id, "❌ Нет новостей для удаления", self.news_management_inline_keyboard())
+            return
+        
+        keyboard = []
+        for news in news_list:
+            news_id, title, _, author, _, publish_date = news
+            date_str = self.format_date(publish_date)
+            button_text = f"{news_id}. {title[:30]}... ({author}, {date_str})"
+            keyboard.append([{"text": button_text, "callback_data": f"news_action_delete_{news_id}"}])
+        
+        keyboard.append([{"text": "⬅️ Назад", "callback_data": "admin_manage_news"}])
+        
+        self.send_message(
+            chat_id,
+            "🗑️ <b>Удаление новости</b>\n\n"
+            "Выберите новость для удаления:",
+            {"inline_keyboard": keyboard}
+        )
+    
+    def show_all_news(self, chat_id, username):
+        if not self.is_admin(username):
+            return
+        
+        news_list = self.get_all_news(limit=20)
+        if not news_list:
+            self.send_message(chat_id, "❌ Нет новостей", self.news_management_inline_keyboard())
+            return
+        
+        text = "📋 <b>Все новости</b>\n\n"
+        for news in news_list:
+            news_id, title, content, author, target_audience, publish_date = news
+            date_str = self.format_date(publish_date)
+            text += f"<b>ID {news_id}: {title}</b>\n"
+            text += f"Автор: {author}\n"
+            text += f"Аудитория: {target_audience}\n"
+            text += f"Дата: {date_str}\n"
+            text += f"Содержание: {content[:100]}...\n"
+            text += "─" * 30 + "\n"
+        
+        self.send_message(chat_id, text, self.news_management_inline_keyboard())
+    
+    def handle_news_action(self, chat_id, username, data):
+        if not self.is_admin(username):
+            return
+        
+        parts = data.split("_")
+        action = parts[2]
+        news_id = int(parts[3])
+        
+        if action == "edit":
+            self.admin_states[username] = {
+                "action": "edit_news_select_field",
+                "news_id": news_id
+            }
+            
+            news = self.get_news_by_id(news_id)
+            if not news:
+                self.send_message(chat_id, "❌ Новость не найдена", self.news_management_inline_keyboard())
+                return
+            
+            _, title, content, author, target_audience, _ = news
+            
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "📝 Заголовок", "callback_data": f"news_edit_field_title_{news_id}"}],
+                    [{"text": "📄 Содержание", "callback_data": f"news_edit_field_content_{news_id}"}],
+                    [{"text": "👤 Автор", "callback_data": f"news_edit_field_author_{news_id}"}],
+                    [{"text": "🎯 Аудитория", "callback_data": f"news_edit_field_audience_{news_id}"}],
+                    [{"text": "⬅️ Назад", "callback_data": "admin_manage_news"}]
+                ]
+            }
+            
+            text = f"📝 <b>Редактирование новости ID {news_id}</b>\n\n"
+            text += f"<b>Текущие данные:</b>\n"
+            text += f"• Заголовок: {title}\n"
+            text += f"• Автор: {author}\n"
+            text += f"• Аудитория: {target_audience}\n"
+            text += f"• Содержание: {content[:100]}...\n\n"
+            text += "Выберите поле для редактирования:"
+            
+            self.send_message(chat_id, text, keyboard)
+        
+        elif action == "delete":
+            if self.delete_news(news_id):
+                self.send_message(chat_id, f"✅ Новость ID {news_id} удалена", self.news_management_inline_keyboard())
+            else:
+                self.send_message(chat_id, f"❌ Ошибка при удалении новости", self.news_management_inline_keyboard())
+    
     def handle_text_message(self, chat_id, user_id, username, text):
         if text == "❌ Отменить":
             if username in self.admin_states:
@@ -1732,8 +1931,75 @@ class SimpleSchoolBot:
         
         if username in self.admin_states:
             state = self.admin_states[username]
+            
             if state.get("action") == "broadcast_waiting_message":
                 self.handle_broadcast_message(chat_id, username, text)
+                return
+            
+            elif state.get("action") == "add_news_title":
+                state["action"] = "add_news_content"
+                state["title"] = text
+                self.send_message(
+                    chat_id,
+                    f"Заголовок сохранен: {text}\n\n"
+                    "Теперь введите содержание новости:",
+                    self.cancel_keyboard()
+                )
+                return
+            
+            elif state.get("action") == "add_news_content":
+                state["action"] = "add_news_audience"
+                state["content"] = text
+                self.send_message(
+                    chat_id,
+                    "Содержание сохранено.\n\n"
+                    "Теперь введите аудиторию новости:\n"
+                    "(например: 'all', '10П', '11Р' или '5-9 классы'):",
+                    self.cancel_keyboard()
+                )
+                return
+            
+            elif state.get("action") == "add_news_audience":
+                title = state.get("title")
+                content = state.get("content")
+                target_audience = text.strip()
+                author = username
+                
+                if self.add_news(title, content, author, target_audience):
+                    self.send_message(
+                        chat_id,
+                        f"✅ Новость успешно добавлена!\n\n"
+                        f"<b>Заголовок:</b> {title}\n"
+                        f"<b>Аудитория:</b> {target_audience}\n"
+                        f"<b>Автор:</b> {author}",
+                        self.news_management_inline_keyboard()
+                    )
+                else:
+                    self.send_message(chat_id, "❌ Ошибка при добавлении новости", self.news_management_inline_keyboard())
+                
+                del self.admin_states[username]
+                return
+            
+            elif state.get("action") == "edit_news_field":
+                news_id = state.get("news_id")
+                field = state.get("field")
+                
+                if field == "title":
+                    self.update_news(news_id, title=text)
+                elif field == "content":
+                    self.update_news(news_id, content=text)
+                elif field == "author":
+                    self.update_news(news_id, author=text)
+                elif field == "audience":
+                    self.update_news(news_id, target_audience=text)
+                
+                self.send_message(
+                    chat_id,
+                    f"✅ Поле '{field}' новости ID {news_id} обновлено",
+                    self.news_management_inline_keyboard()
+                )
+                
+                del self.admin_states[username]
                 return
         
         if user_id in self.user_states:
@@ -2093,11 +2359,13 @@ class SimpleSchoolBot:
             return
         
         text = "📰 <b>Последние новости</b>\n\n"
-        for title, content, author, publish_date in news:
+        for news_item in news:
+            news_id, title, content, author, publish_date, target_audience = news_item
             date_str = self.format_date(publish_date)
             text += f"<b>{self.safe_message(title)}</b>\n"
             text += f"{self.safe_message(content[:100])}...\n"
-            text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n\n"
+            text += f"👤 {self.safe_message(author)} | 📅 {date_str}\n"
+            text += f"🎯 Аудитория: {target_audience}\n\n"
             
             self.log_user_activity(user_id, "news_read", f"News: {title}")
         
@@ -2258,20 +2526,31 @@ class SimpleSchoolBot:
     
     def show_schedule(self, chat_id, class_name, day_code, day_name):
         schedule = self.get_schedule(class_name, day_code)
-        
+    
         if schedule:
             schedule_text = f"📅 <b>Расписание {self.safe_message(class_name)} класса</b>\n{day_name}\n\n"
             for lesson in schedule:
-                schedule_text += f"{lesson[0]}. <b>{self.safe_message(lesson[1])}</b>"
-                if lesson[2]:
-                    schedule_text += f" ({self.safe_message(lesson[2])})"
-                if lesson[3]:
-                    schedule_text += f" - {self.safe_message(lesson[3])}"
+                lesson_num, subject, teacher, room = lesson
+                schedule_text += f"{lesson_num}. <b>{self.safe_message(subject)}</b>"
+                if teacher:
+                    schedule_text += f" ({self.safe_message(teacher)})"
+                if room:
+                    schedule_text += f" - {self.safe_message(room)}"
                 schedule_text += "\n"
+            
+            # Добавляем расписание звонков
+            bells = self.get_bell_schedule()
+            if bells:
+                schedule_text += "\n🔔 <b>Расписание звонков:</b>\n"
+                for bell in bells[:len(schedule)]:  # Только для нужного количества уроков
+                    bell_num, start_time, end_time = bell
+                    if bell_num <= len(schedule):
+                        schedule_text += f"{bell_num}. {start_time} - {end_time}\n"
         else:
             schedule_text = f"❌ Расписание для {self.safe_message(class_name)} класса на {day_name.lower()} не найдено"
         
         self.send_message(chat_id, schedule_text, self.main_menu_keyboard())
+
     
     def handle_admin_menu(self, chat_id, username, text):
         if not self.is_admin(username):
@@ -2417,65 +2696,108 @@ class SimpleSchoolBot:
             self.cancel_keyboard()
         )
     
-    def handle_schedule_input(self, chat_id, username, text):
-        if username not in self.admin_states:
-            return
+def handle_schedule_input(self, chat_id, username, text):
+    if username not in self.admin_states:
+        return
+    
+    class_name = self.admin_states[username].get("class")
+    day_code = self.admin_states[username].get("day")
+    
+    if not class_name or not day_code:
+        self.send_message(chat_id, "❌ Ошибка: данные не найдены", self.admin_menu_inline_keyboard())
+        return
+    
+    if text == '-':
+        self.save_schedule(class_name, day_code, [])
+        self.send_message(chat_id, "✅ Расписание очищено!", self.admin_menu_inline_keyboard())
+    else:
+        lessons = []
+        lines = text.split('\n')
         
-        class_name = self.admin_states[username].get("class")
-        day_code = self.admin_states[username].get("day")
-        
-        if not class_name or not day_code:
-            self.send_message(chat_id, "❌ Ошибка: данные не найдены", self.admin_menu_inline_keyboard())
-            return
-        
-        if text == '-':
-            self.save_schedule(class_name, day_code, [])
-            self.send_message(chat_id, "✅ Расписание очищено!", self.admin_menu_inline_keyboard())
-        else:
-            lessons = []
-            lines = text.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if not line or not line[0].isdigit():
-                    continue
-                    
-                parts = line.split('.', 1)
-                if len(parts) < 2:
-                    continue
-                    
-                try:
-                    lesson_num = int(parts[0].strip())
-                    lesson_info = parts[1].strip()
-                    
-                    subject = lesson_info
+        for line in lines:
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+                
+            parts = line.split('.', 1)
+            if len(parts) < 2:
+                continue
+                
+            try:
+                lesson_num = int(parts[0].strip())
+                lesson_info = parts[1].strip()
+                
+                # Разделяем на части по дефисам
+                parts_by_dash = [part.strip() for part in lesson_info.split('-')]
+                
+                # Первая часть - это предмет и возможный учитель в скобках
+                subject_part = parts_by_dash[0].strip()
+                subject = subject_part
+                teacher = ""
+                room = ""
+                
+                # Проверяем, есть ли учитель в скобках в первой части
+                if '(' in subject_part and ')' in subject_part:
+                    # Извлекаем учителя из скобок
+                    start = subject_part.find('(')
+                    end = subject_part.find(')')
+                    teacher = subject_part[start+1:end].strip()
+                    # Удаляем скобки с учителем из предмета
+                    subject = subject_part[:start].strip()
+                
+                # Если есть вторая часть после дефиса - это кабинет
+                if len(parts_by_dash) >= 2:
+                    room = parts_by_dash[1].strip()
+                    # Если есть третья часть - это тоже кабинет (дублирование)
+                    if len(parts_by_dash) >= 3:
+                        # Берем последнюю часть как кабинет
+                        room = parts_by_dash[-1].strip()
+                        # Логируем дублирование для отладки
+                        logger.info(f"Обнаружено дублирование кабинета в строке: {line}")
+                
+                # Специальная обработка для случаев вроде "алгебра (6)"
+                # Если teacher похож на номер кабинета, а room пустой
+                if teacher and not room and teacher.isdigit():
+                    room = teacher
                     teacher = ""
-                    room = ""
-                    
-                    if '(' in lesson_info and ')' in lesson_info:
-                        start = lesson_info.find('(')
-                        end = lesson_info.find(')')
-                        teacher = lesson_info[start+1:end]
-                        subject = lesson_info[:start].strip()
-                        lesson_info = lesson_info[end+1:].strip()
-                    
-                    if ' - ' in lesson_info:
-                        room_parts = lesson_info.split(' - ', 1)
-                        subject = subject if subject else room_parts[0].strip()
-                        room = room_parts[1].strip()
-                    elif lesson_info and not subject:
-                        subject = lesson_info
-                    
-                    if subject:
-                        lessons.append((lesson_num, subject, teacher, room))
-                except ValueError:
-                    continue
-            
-            self.save_schedule(class_name, day_code, lessons)
-            self.send_message(chat_id, f"✅ Расписание для {self.safe_message(class_name)} класса обновлено!", self.admin_menu_inline_keyboard())
+                    logger.info(f"Перенос учителя как кабинета: teacher={teacher} -> room={room}")
+                
+                # Очищаем предмет от лишних символов
+                subject = subject.replace('()', '').strip()
+                
+                # Убираем дублирование в кабинете (если что-то вроде "37 - 37")
+                if ' - ' in room:
+                    room_parts = room.split(' - ')
+                    # Берем первую часть как кабинет
+                    room = room_parts[0].strip()
+                
+                if subject:
+                    lessons.append((lesson_num, subject, teacher, room))
+                    logger.info(f"Парсинг урока: номер={lesson_num}, предмет={subject}, учитель={teacher}, кабинет={room}")
+            except ValueError as e:
+                logger.error(f"Ошибка парсинга строки '{line}': {e}")
+                continue
         
-        if username in self.admin_states:
-            del self.admin_states[username]
+        if lessons:
+            self.save_schedule(class_name, day_code, lessons)
+            # Формируем отчет о сохранении
+            schedule_text = f"✅ Расписание для {self.safe_message(class_name)} класса обновлено!\n\n"
+            schedule_text += f"<b>Сохранено уроков:</b> {len(lessons)}\n\n"
+            schedule_text += "<b>Обновленное расписание:</b>\n"
+            for lesson_num, subject, teacher, room in sorted(lessons, key=lambda x: x[0]):
+                schedule_text += f"{lesson_num}. <b>{subject}</b>"
+                if teacher:
+                    schedule_text += f" ({teacher})"
+                if room:
+                    schedule_text += f" - {room}"
+                schedule_text += "\n"
+            
+            self.send_message(chat_id, schedule_text, self.admin_menu_inline_keyboard())
+        else:
+            self.send_message(chat_id, "❌ Не удалось распарсить ни одного урока", self.admin_menu_inline_keyboard())
+    
+    if username in self.admin_states:
+        del self.admin_states[username]
     
     def show_statistics(self, chat_id):
         users = self.get_all_users()
@@ -2602,6 +2924,9 @@ class SimpleSchoolBot:
                             return
                         elif state.get("action") == "broadcast_waiting_message":
                             self.handle_broadcast_message(chat_id, username, text)
+                            return
+                        elif state.get("action") in ["add_news_title", "add_news_content", "add_news_audience", "edit_news_field"]:
+                            self.handle_text_message(chat_id, user_id, username, text)
                             return
                     
                     if user_id in self.user_states:
