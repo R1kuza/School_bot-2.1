@@ -3661,54 +3661,55 @@ def process_update(self, update):
         import traceback
         logger.error(traceback.format_exc())
 
-    def run(self):
-        logger.info("Бот запущен!")
-        
+def run(self):
+    """Основной цикл работы бота"""
+    logger.info("Бот запущен!")
+    
+    try:
+        delete_url = f"{BASE_URL}/deleteWebhook"
+        response = requests.get(delete_url, timeout=10)
+        if response.json().get("ok"):
+            logger.info("Вебхук очищен, используется long polling")
+        else:
+            logger.warning("Не удалось очистить вебхук")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке вебхука: {e}")
+    
+    conflict_count = 0
+    max_conflicts = 5
+    
+    while True:
         try:
-            delete_url = f"{BASE_URL}/deleteWebhook"
-            response = requests.get(delete_url, timeout=10)
-            if response.json().get("ok"):
-                logger.info("Вебхук очищен, используется long polling")
+            updates = self.get_updates()
+            
+            if updates.get("conflict"):
+                conflict_count += 1
+                logger.warning(f"Обнаружен конфликт getUpdates ({conflict_count}/{max_conflicts})")
+                
+                if conflict_count >= max_conflicts:
+                    logger.error("Достигнуто максимальное количество конфликтов. Завершаем работу.")
+                    break
+                
+                time.sleep(10)
+                continue
             else:
-                logger.warning("Не удалось очистить вебхук")
+                conflict_count = 0
+            
+            if updates.get("ok") and "result" in updates:
+                for update in updates["result"]:
+                    self.last_update_id = update["update_id"]
+                    self.process_update(update)
+            else:
+                if "description" in updates:
+                    error_desc = updates.get('description', '')
+                    if "Conflict" not in error_desc:
+                        logger.error(f"Ошибка Telegram API: {error_desc}")
+            
+            time.sleep(0.5)
+            
         except Exception as e:
-            logger.error(f"Ошибка при очистке вебхука: {e}")
-        
-        conflict_count = 0
-        max_conflicts = 5
-        
-        while True:
-            try:
-                updates = self.get_updates()
-                
-                if updates.get("conflict"):
-                    conflict_count += 1
-                    logger.warning(f"Обнаружен конфликт getUpdates ({conflict_count}/{max_conflicts})")
-                    
-                    if conflict_count >= max_conflicts:
-                        logger.error("Достигнуто максимальное количество конфликтов. Завершаем работу.")
-                        break
-                    
-                    time.sleep(10)
-                    continue
-                else:
-                    conflict_count = 0
-                
-                if updates.get("ok") and "result" in updates:
-                    for update in updates["result"]:
-                        self.last_update_id = update["update_id"]
-                        self.process_update(update)
-                else:
-                    if "description" in updates:
-                        error_desc = updates.get('description', '')
-                        if "Conflict" not in error_desc:
-                            logger.error(f"Ошибка Telegram API: {error_desc}")
-                
-                time.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Ошибка в основном цикле: {e}")
-                time.sleep(5)
+            logger.error(f"Ошибка в основном цикле: {e}")
+            time.sleep(5)
 
 if __name__ == "__main__":
     bot = SimpleSchoolBot()
