@@ -124,7 +124,7 @@ class DatabaseManager:
             self.conn.close()
 
     def create_tables(self):
-        try:
+        try:    
             self.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -219,6 +219,17 @@ class DatabaseManager:
                     status TEXT DEFAULT 'pending'
                 )
             """)
+
+            self.execute("""
+                CREATE TABLE IF NOT EXISTS class_rosters (
+                    id SERIAL PRIMARY KEY,
+                    class TEXT NOT NULL,
+                    full_name TEXT NOT NULL,
+                    UNIQUE(class, full_name)
+                )
+            """)
+            
+            logger.info("✅ Таблица class_rosters создана")
             
             result = self.fetchone("SELECT COUNT(*) FROM bell_schedule")
             if result and result[0] == 0:
@@ -292,6 +303,84 @@ class DatabaseManager:
             logger.info("✅ Дублирующиеся достижения очищены")
         except Exception as e:
             logger.error(f"❌ Ошибка очистки дубликатов: {e}")
+
+    def add_student_to_roster(self, class_name, full_name):
+            """Добавить ученика в официальный список класса"""
+            try:
+                self.execute(
+                    "INSERT INTO class_rosters (class, full_name) VALUES (?, ?) ON CONFLICT (class, full_name) DO NOTHING",
+                    (class_name.upper(), full_name.strip())
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка добавления ученика в список: {e}")
+                return False
+
+    def remove_student_from_roster(self, class_name, full_name):
+            """Удалить ученика из официального списка класса"""
+            try:
+                self.execute(
+                    "DELETE FROM class_rosters WHERE class = ? AND full_name = ?",
+                    (class_name.upper(), full_name.strip())
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка удаления ученика из списка: {e}")
+                return False
+
+    def get_students_by_class(self, class_name):
+            """Получить список учеников класса"""
+            try:
+                result = self.fetchall(
+                    "SELECT full_name FROM class_rosters WHERE class = ? ORDER BY full_name",
+                    (class_name.upper(),)
+                )
+                return [row[0] for row in result]
+            except Exception as e:
+                logger.error(f"Ошибка получения списка учеников: {e}")
+                return []
+
+    def check_student_in_roster(self, class_name, full_name):
+            """Проверить, есть ли ученик в официальном списке класса"""
+            try:
+                result = self.fetchone(
+                    "SELECT 1 FROM class_rosters WHERE class = ? AND full_name = ?",
+                    (class_name.upper(), full_name.strip())
+                )
+                return result is not None
+            except Exception as e:
+                logger.error(f"Ошибка проверки ученика: {e}")
+                return False
+
+    def import_roster_from_excel(self, file_content):
+            """Импорт списков учеников из Excel файла"""
+            try:
+                import pandas as pd
+                
+                # Считываем Excel
+                df = pd.read_excel(io.BytesIO(file_content))
+                
+                added_count = 0
+                error_count = 0
+                
+                for _, row in df.iterrows():
+                    try:
+                        if len(row) >= 2:
+                            class_name = str(row[0]).strip().upper()
+                            full_name = str(row[1]).strip()
+                            
+                            if self.is_valid_class(class_name) and full_name:
+                                self.add_student_to_roster(class_name, full_name)
+                                added_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        logger.error(f"Ошибка импорта строки {row}: {e}")
+                
+                return True, f"✅ Импортировано {added_count} учеников, ошибок: {error_count}"
+                
+            except Exception as e:
+                logger.error(f"Ошибка импорта списка учеников: {e}")
+                return False, f"❌ Ошибка импорта: {str(e)}"
 
 class RateLimiter:
     def __init__(self, max_requests=MAX_REQUESTS_PER_MINUTE, window=60):
@@ -1126,6 +1215,103 @@ class SimpleSchoolBot:
                 [{"text": "⬅️ Назад в админку", "callback_data": "admin_back"}]
             ]
         }
+
+    def roster_management_inline_keyboard(self):
+            return {
+                "inline_keyboard": [
+                    [{"text": "➕ Добавить ученика", "callback_data": "roster_add"}],
+                    [{"text": "➖ Удалить ученика", "callback_data": "roster_remove"}],
+                    [{"text": "👥 Просмотр списка", "callback_data": "roster_view"}],
+                    [{"text": "📤 Импорт из Excel", "callback_data": "roster_import"}],
+                    [{"text": "⬅️ Назад в админку", "callback_data": "admin_back"}]
+                ]
+            }
+
+    def show_roster_management(self, chat_id, username):
+            """Показать меню управления списками учеников"""
+            if not self.is_admin(username):
+                return
+            
+            # Статистика
+            total_students = self.db.fetchone("SELECT COUNT(*) FROM class_rosters")
+            total_students = total_students[0] if total_students else 0
+            
+            classes_count = self.db.fetchone("SELECT COUNT(DISTINCT class) FROM class_rosters")
+            classes_count = classes_count[0] if classes_count else 0
+            
+            text = (f"📋 <b>Управление списками учеников</b>\n\n"
+                f"📊 Статистика:\n"
+                f"• Всего учеников: {total_students}\n"
+                f"• Классов в системе: {classes_count}\n\n"
+                f"<b>Формат данных:</b>\n"
+                f"• ФИО: <i>Иванов Иван</i>\n"
+                f"• Класс: <i>10П</i>\n\n"
+                f"Выберите действие:")
+            
+            self.send_message(chat_id, text, self.roster_management_inline_keyboard())
+        
+    def start_add_student(self, chat_id, username):
+            """Начать добавление ученика в список"""
+            if not self.is_admin(username):
+                return
+            
+            self.admin_states[username] = {"action": "roster_add_waiting_data"}
+            self.send_message(
+                chat_id,
+                "➕ <b>Добавление ученика в список</b>\n\n"
+                "Введите данные в формате:\n"
+                "<b>Класс, Фамилия Имя</b>\n\n"
+                "Например: <i>10П, Иванов Иван</i>\n\n"
+                "Для отмены нажмите '❌ Отменить'",
+                self.cancel_keyboard()
+            )
+
+    def start_remove_student(self, chat_id, username):
+            """Начать удаление ученика из списка"""
+            if not self.is_admin(username):
+                return
+            
+            self.admin_states[username] = {"action": "roster_remove_waiting_data"}
+            self.send_message(
+                chat_id,
+                "➖ <b>Удаление ученика из списка</b>\n\n"
+                "Введите данные в формате:\n"
+                "<b>Класс, Фамилия Имя</b>\n\n"
+                "Например: <i>10П, Иванов Иван</i>\n\n"
+                "Для отмены нажмите '❌ Отменить'",
+                self.cancel_keyboard()
+            )
+
+    def start_view_roster(self, chat_id, username):
+            """Просмотр списка учеников класса"""
+            if not self.is_admin(username):
+                return
+            
+            self.admin_states[username] = {"action": "roster_view_waiting_class"}
+            self.send_message(
+                chat_id,
+                "👥 <b>Просмотр списка учеников</b>\n\n"
+                "Введите название класса:\n\n"
+                "Например: <i>10П</i>\n\n"
+                "Для отмены нажмите '❌ Отменить'",
+                self.cancel_keyboard()
+            )
+
+    def start_roster_import(self, chat_id, username):
+            """Импорт списка учеников из Excel"""
+            if not self.is_admin(username):
+                return
+            
+            self.admin_states[username] = {"action": "roster_waiting_excel"}
+            self.send_message(
+                chat_id,
+                "📤 <b>Импорт списка учеников из Excel</b>\n\n"
+                "Отправьте Excel файл с двумя колонками:\n"
+                "1. Класс (например: 10П)\n"
+                "2. ФИО (например: Иванов Иван)\n\n"
+                "Файл должен быть в формате .xlsx или .xls",
+                self.cancel_keyboard()
+            )
     
     def notifications_settings_keyboard(self):
         return {
@@ -1705,7 +1891,11 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "❌ У вас нет доступа к админ-панели")
             return
         
-        text = "👨‍💼 <b>Панель администратора</b>\n\nВыберите действие:"
+        text = ("👨‍💼 <b>Панель администратора</b>\n\nВыберите действие:"
+                    "<b>Доступные команды:</b>\n"
+                    "/rosters - управление списками учеников\n"
+                    "/import_rosters - импорт списков из Excel\n\n"
+                    "Выберите действие:")
         self.send_message(chat_id, text, self.admin_menu_inline_keyboard())
         
     def handle_callback_query(self, update):
@@ -1878,7 +2068,90 @@ class SimpleSchoolBot:
             f"<code>{self.safe_message(current_value[:200])}</code>\n\n"
             f"Введите новое значение для {field_name}:",
             self.cancel_keyboard()
-        )       
+        )     
+
+    def handle_roster_add(self, chat_id, username, text):
+            """Обработка добавления ученика"""
+            parts = text.split(',')
+            if len(parts) != 2:
+                self.send_message(chat_id, "❌ Неверный формат. Введите: Класс, Фамилия Имя")
+                return
+            
+            class_name = parts[0].strip().upper()
+            full_name = parts[1].strip()
+            
+            if not self.is_valid_class(class_name):
+                self.send_message(chat_id, "❌ Неверный формат класса")
+                return
+            
+            if not self.is_valid_fullname(full_name):
+                self.send_message(chat_id, "❌ Неверный формат ФИО")
+                return
+            
+            if self.db.add_student_to_roster(class_name, full_name):
+                self.send_message(
+                    chat_id,
+                    f"✅ Ученик добавлен в список:\n\n"
+                    f"Класс: {class_name}\n"
+                    f"ФИО: {full_name}",
+                    self.roster_management_inline_keyboard()
+                )
+            else:
+                self.send_message(chat_id, "❌ Ошибка добавления ученика")
+            
+            del self.admin_states[username]
+
+    def handle_roster_remove(self, chat_id, username, text):
+            """Обработка удаления ученика"""
+            parts = text.split(',')
+            if len(parts) != 2:
+                self.send_message(chat_id, "❌ Неверный формат. Введите: Класс, Фамилия Имя")
+                return
+            
+            class_name = parts[0].strip().upper()
+            full_name = parts[1].strip()
+            
+            if self.db.remove_student_from_roster(class_name, full_name):
+                self.send_message(
+                    chat_id,
+                    f"✅ Ученик удален из списка:\n\n"
+                    f"Класс: {class_name}\n"
+                    f"ФИО: {full_name}",
+                    self.roster_management_inline_keyboard()
+                )
+            else:
+                self.send_message(chat_id, "❌ Ученик не найден или ошибка удаления")
+            
+            del self.admin_states[username]
+
+    def handle_roster_view(self, chat_id, username, text):
+            """Обработка просмотра списка учеников"""
+            class_name = text.strip().upper()
+            
+            if not self.is_valid_class(class_name):
+                self.send_message(chat_id, "❌ Неверный формат класса")
+                del self.admin_states[username]
+                return
+            
+            students = self.db.get_students_by_class(class_name)
+            
+            if not students:
+                self.send_message(
+                    chat_id,
+                    f"📋 <b>Список учеников {class_name} класса</b>\n\n"
+                    f"❌ В списке нет учеников",
+                    self.roster_management_inline_keyboard()
+                )
+            else:
+                text = f"📋 <b>Список учеников {class_name} класса</b>\n\n"
+                text += f"Всего учеников: {len(students)}\n\n"
+                
+                for i, student in enumerate(students, 1):
+                    text += f"{i}. {student}\n"
+                
+                self.send_message(chat_id, text, self.roster_management_inline_keyboard())
+            
+            del self.admin_states[username]  
     
     def handle_admin_callback(self, chat_id, username, data):
         if not self.is_admin(username):
@@ -1920,6 +2193,16 @@ class SimpleSchoolBot:
             self.start_edit_bell(chat_id, username)
         elif data == "admin_view_bells":
             self.show_all_bells(chat_id)
+        elif data == "admin_manage_rosters":
+            self.show_roster_management(chat_id, username)
+        elif data == "roster_add":
+            self.start_add_student(chat_id, username)
+        elif data == "roster_remove":
+            self.start_remove_student(chat_id, username)
+        elif data == "roster_view":
+            self.start_view_roster(chat_id, username)
+        elif data == "roster_import":
+            self.start_roster_import(chat_id, username)
 
     def process_news_search(self, chat_id, user_id, query):
         """Обработка поискового запроса"""
@@ -2243,7 +2526,16 @@ class SimpleSchoolBot:
                 
                 del self.admin_states[username]
                 return
-        
+            elif state.get("action") == "roster_add_waiting_data":
+                        self.handle_roster_add(chat_id, username, text)
+                        return
+            elif state.get("action") == "roster_remove_waiting_data":
+                        self.handle_roster_remove(chat_id, username, text)
+                        return
+            elif state.get("action") == "roster_view_waiting_class":
+                        self.handle_roster_view(chat_id, username, text)
+                        return
+                   
         if user_id in self.user_states:
             state = self.user_states[user_id]
             if state.get("action") == "registration":
@@ -2264,6 +2556,21 @@ class SimpleSchoolBot:
         
         full_name = parts[0].strip()
         class_name = parts[1].strip().upper()
+
+        if not self.db.check_student_in_roster(class_name, full_name):
+            self.send_message(
+                chat_id,
+                f"❌ <b>Проверка не пройдена</b>\n\n"
+                f"ФИО: {full_name}\n"
+                f"Класс: {class_name}\n\n"
+                f"Ваших данных нет в официальном списке учеников.\n\n"
+                f"<b>Возможные причины:</b>\n"
+                f"1. Ошибка в написании ФИО\n"
+                f"2. Вы указали неверный класс\n"
+                f"3. Ваши данные еще не добавлены в систему\n\n"
+                f"Обратитесь к классному руководителю или администратору."
+            )
+            return     
         
         if not self.is_valid_fullname(full_name):
             self.send_message(chat_id, "❌ Неверный формат ФИО")
@@ -2271,6 +2578,22 @@ class SimpleSchoolBot:
         
         if not self.is_valid_class(class_name):
             self.send_message(chat_id, "❌ Неверный формат класса")
+            return
+        
+ # ✅ ПРОВЕРКА: Есть ли ученик в официальном списке
+        if not self.db.check_student_in_roster(class_name, full_name):
+            self.send_message(
+                chat_id,
+                f"❌ <b>Проверка не пройдена</b>\n\n"
+                f"ФИО: {full_name}\n"
+                f"Класс: {class_name}\n\n"
+                f"Ваших данных нет в официальном списке учеников.\n\n"
+                f"<b>Возможные причины:</b>\n"
+                f"1. Ошибка в написании ФИО\n"
+                f"2. Вы указали неверный класс\n"
+                f"3. Ваши данные еще не добавлены в систему\n\n"
+                f"Обратитесь к классному руководителю или администратору."
+            )
             return
         
         if self.create_user(user_id, full_name, class_name, username):
@@ -3196,6 +3519,38 @@ class SimpleSchoolBot:
                         del self.admin_states[username]
                     return
                 
+            if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "roster_waiting_excel":
+                document = message["document"]
+                file_id = document["file_id"]
+                file_name = document.get("file_name", "")
+
+                if not file_name.lower().endswith(('.xlsx', '.xls')):
+                    self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
+                    return
+                self.send_message(chat_id, "📥 Загружаю файл со списком учеников...")
+            
+                file_info = self.get_file(file_id)
+                if not file_info:
+                    self.send_message(chat_id, "❌ Ошибка получения информации о файле")
+                    return
+            
+                file_content = self.download_file(file_info["file_path"])
+                if not file_content:
+                    self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                    return
+            
+                self.send_message(chat_id, "🔍 Обрабатываю список учеников...")
+                
+                success, message_text = self.db.import_roster_from_excel(file_content)
+                
+                if success:
+                    self.send_message(chat_id, f"✅ {message_text}", self.roster_management_inline_keyboard())
+                else:
+                    self.send_message(chat_id, f"❌ {message_text}", self.roster_management_inline_keyboard())
+                
+                    del self.admin_states[username]
+                    return
+                
                 if "text" in message:
                     text = message["text"]
                     
@@ -3280,7 +3635,7 @@ class SimpleSchoolBot:
                             self.handle_registration_start(chat_id, user_id)
                         else:
                             self.handle_text_message(chat_id, user_id, username, text)
-                    # === КОНЕЦ ЗАМЕНЫ ===
+                    
         
         except Exception as e:
             logger.error(f"Ошибка в process_update: {e}")
