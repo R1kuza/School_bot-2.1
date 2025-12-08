@@ -3661,7 +3661,7 @@ def process_update(self, update):
         import traceback
         logger.error(traceback.format_exc())
 
-def run(self):
+def run(self):  # ← ЭТОТ МЕТОД ДОЛЖЕН БЫТЬ НА УРОВНЕ КЛАССА, А НЕ ВНУТРИ process_update
     """Основной цикл работы бота"""
     logger.info("Бот запущен!")
     
