@@ -1891,11 +1891,7 @@ class SimpleSchoolBot:
             self.send_message(chat_id, "❌ У вас нет доступа к админ-панели")
             return
         
-        text = ("👨‍💼 <b>Панель администратора</b>\n\nВыберите действие:"
-                    "<b>Доступные команды:</b>\n"
-                    "/rosters - управление списками учеников\n"
-                    "/import_rosters - импорт списков из Excel\n\n"
-                    "Выберите действие:")
+        text = "👨‍💼 <b>Панель администратора</b>\n\nВыберите действие:"
         self.send_message(chat_id, text, self.admin_menu_inline_keyboard())
         
     def handle_callback_query(self, update):
@@ -3455,204 +3451,215 @@ class SimpleSchoolBot:
         
         self.send_message(chat_id, stats_text, self.admin_menu_inline_keyboard())
     
-    def process_update(self, update):
-        update_id = update.get("update_id")
-        
-        if update_id in self.processed_updates:
-            logger.info(f"Пропускаем уже обработанное обновление: {update_id}")
+def process_update(self, update):
+    update_id = update.get("update_id")
+    
+    if update_id in self.processed_updates:
+        logger.info(f"Пропускаем уже обработанное обновление: {update_id}")
+        return
+    
+    self.processed_updates.add(update_id)
+    
+    if len(self.processed_updates) > 1000:
+        self.processed_updates = set(list(self.processed_updates)[-500:])
+    
+    try:
+        if "callback_query" in update:
+            self.handle_callback_query(update)
             return
         
-        self.processed_updates.add(update_id)
-        
-        if len(self.processed_updates) > 1000:
-            self.processed_updates = set(list(self.processed_updates)[-500:])
-        
-        try:
-            if "callback_query" in update:
-                self.handle_callback_query(update)
+        if "message" in update:
+            message = update["message"]
+            chat_id = message["chat"]["id"]
+            user = message.get("from", {})
+            user_id = user.get("id")
+            username = user.get("username", "")
+            
+            if user_id and self.rate_limiter.is_limited(user_id):
+                self.log_security_event("rate_limit_exceeded", user_id, f"Username: {username}")
+                self.send_message(chat_id, "⚠️ Слишком много запросов. Пожалуйста, подождите.")
                 return
             
-            if "message" in update:
-                message = update["message"]
-                chat_id = message["chat"]["id"]
-                user = message.get("from", {})
-                user_id = user.get("id")
-                username = user.get("username", "")
+            # ======= СУЩЕСТВУЮЩИЙ КОД ДЛЯ РАСПИСАНИЯ =======
+            if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "waiting_excel":
+                document = message["document"]
+                file_id = document["file_id"]
+                file_name = document.get("file_name", "")
+                shift = self.admin_states[username].get("shift", "1")
                 
-                if user_id and self.rate_limiter.is_limited(user_id):
-                    self.log_security_event("rate_limit_exceeded", user_id, f"Username: {username}")
-                    self.send_message(chat_id, "⚠️ Слишком много запросов. Пожалуйста, подождите.")
+                if not file_name.lower().endswith(('.xlsx', '.xls')):
+                    self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
                     return
                 
-                # 1. Обработка Excel для расписания
-                if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "waiting_excel":
-                    document = message["document"]
-                    file_id = document["file_id"]
-                    file_name = document.get("file_name", "")
-                    shift = self.admin_states[username].get("shift", "1")
-                    
-                    if not file_name.lower().endswith(('.xlsx', '.xls')):
-                        self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
-                        return
-                    
-                    self.send_message(chat_id, f"📥 Начинаю загрузку файла для {shift} смены...")
-                    
-                    file_info = self.get_file(file_id)
-                    if not file_info:
-                        self.send_message(chat_id, "❌ Ошибка получения информации о файле")
-                        return
-                    
-                    file_content = self.download_file(file_info["file_path"])
-                    if not file_content:
-                        self.send_message(chat_id, "❌ Ошибка загрузки файла")
-                        return
-                    
-                    self.send_message(chat_id, f"🔍 Обрабатываю расписание для {shift} смены...")
-                    
-                    success, message_text = self.import_schedule_from_excel(file_content, shift)
-                    
-                    if success:
-                        self.send_message(chat_id, f"✅ {message_text}", self.admin_menu_inline_keyboard())
-                    else:
-                        self.send_message(chat_id, f"❌ {message_text}", self.admin_menu_inline_keyboard())
-                    
+                self.send_message(chat_id, f"📥 Начинаю загрузку файла для {shift} смены...")
+                
+                file_info = self.get_file(file_id)
+                if not file_info:
+                    self.send_message(chat_id, "❌ Ошибка получения информации о файле")
+                    return
+                
+                file_content = self.download_file(file_info["file_path"])
+                if not file_content:
+                    self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                    return
+                
+                self.send_message(chat_id, f"🔍 Обрабатываю расписание для {shift} смены...")
+                
+                success, message_text = self.import_schedule_from_excel(file_content, shift)
+                
+                if success:
+                    self.send_message(chat_id, f"✅ {message_text}", self.admin_menu_inline_keyboard())
+                else:
+                    self.send_message(chat_id, f"❌ {message_text}", self.admin_menu_inline_keyboard())
+                
+                del self.admin_states[username]
+                return
+            
+            # ======= НОВЫЙ КОД ДЛЯ СПИСКОВ УЧЕНИКОВ =======
+            if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "roster_waiting_excel":
+                document = message["document"]
+                file_id = document["file_id"]
+                file_name = document.get("file_name", "")
+                
+                if not file_name.lower().endswith(('.xlsx', '.xls')):
+                    self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
+                    return
+                
+                self.send_message(chat_id, "📥 Загружаю файл со списком учеников...")
+                
+                file_info = self.get_file(file_id)
+                if not file_info:
+                    self.send_message(chat_id, "❌ Ошибка получения информации о файле")
+                    return
+                
+                file_content = self.download_file(file_info["file_path"])
+                if not file_content:
+                    self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                    return
+                
+                self.send_message(chat_id, "🔍 Обрабатываю список учеников...")
+                
+                success, message_text = self.db.import_roster_from_excel(file_content)
+                
+                if success:
+                    self.send_message(chat_id, f"✅ {message_text}", self.roster_management_inline_keyboard())
+                else:
+                    self.send_message(chat_id, f"❌ {message_text}", self.roster_management_inline_keyboard())
+                
+                del self.admin_states[username]
+                return
+            
+            # Дальше идет обработка текстовых сообщений
+            if "text" in message:
+                text = message["text"]
+                
+                if text == "❌ Отменить":
                     if username in self.admin_states:
                         del self.admin_states[username]
-                    return
-                
-                # 2. Обработка Excel для списков учеников
-                if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "roster_waiting_excel":
-                    document = message["document"]
-                    file_id = document["file_id"]
-                    file_name = document.get("file_name", "")
-                    
-                    if not file_name.lower().endswith(('.xlsx', '.xls')):
-                        self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
-                        return
-                    
-                    self.send_message(chat_id, "📥 Загружаю файл со списком учеников...")
-                    
-                    file_info = self.get_file(file_id)
-                    if not file_info:
-                        self.send_message(chat_id, "❌ Ошибка получения информации о файле")
-                        return
-                    
-                    file_content = self.download_file(file_info["file_path"])
-                    if not file_content:
-                        self.send_message(chat_id, "❌ Ошибка загрузки файла")
-                        return
-                    
-                    self.send_message(chat_id, "🔍 Обрабатываю список учеников...")
-                    
-                    success, message_text = self.db.import_roster_from_excel(file_content)
-                    
-                    if success:
-                        self.send_message(chat_id, f"✅ {message_text}", self.roster_management_inline_keyboard())
-                    else:
-                        self.send_message(chat_id, f"❌ {message_text}", self.roster_management_inline_keyboard())
-                    
-                    if username in self.admin_states:
-                        del self.admin_states[username]
-                    return
-                
-                # 3. Обработка текстовых сообщений
-                if "text" in message:
-                    text = message["text"]
-                    
-                    if text == "❌ Отменить":
-                        if username in self.admin_states:
-                            del self.admin_states[username]
-                        if user_id in self.user_states:
-                            del self.user_states[user_id]
-                        self.send_message(chat_id, "Действие отменено", self.main_menu_keyboard())
-                        return
-                    
-                    if username in self.admin_states:
-                        state = self.admin_states[username]
-                        
-                        if state.get("action") in ["add_class_input", "delete_class_input"]:
-                            self.handle_class_input(chat_id, username, text)
-                            return
-                        
-                        if state.get("action") in ["edit_bell_number", "edit_bell_start", "edit_bell_end"]:
-                            self.handle_bell_input(chat_id, username, text)
-                            return
-                        
-                        if state.get("action") == "delete_user":
-                            self.delete_user_by_identifier(chat_id, username, text)
-                            return
-                        elif state.get("action") == "edit_schedule_input":
-                            self.handle_schedule_input(chat_id, username, text)
-                            return
-                        elif state.get("action") == "edit_schedule_class":
-                            self.handle_schedule_class_selection(chat_id, username, text)
-                            return
-                        elif state.get("action") == "edit_schedule_day":
-                            self.handle_schedule_day_selection(chat_id, username, text)
-                            return
-                        elif state.get("action") == "select_shift":
-                            self.handle_shift_selection(chat_id, username, text)
-                            return
-                        elif state.get("action") == "broadcast_waiting_message":
-                            self.handle_broadcast_message(chat_id, username, text)
-                            return
-                        elif state.get("action") in ["add_news_title", "add_news_content", "add_news_audience", "edit_news_field"]:
-                            self.handle_text_message(chat_id, user_id, username, text)
-                            return
-                        elif state.get("action") == "roster_add_waiting_data":
-                            self.handle_roster_add(chat_id, username, text)
-                            return
-                        elif state.get("action") == "roster_remove_waiting_data":
-                            self.handle_roster_remove(chat_id, username, text)
-                            return
-                        elif state.get("action") == "roster_view_waiting_class":
-                            self.handle_roster_view(chat_id, username, text)
-                            return
-                    
                     if user_id in self.user_states:
-                        state = self.user_states[user_id]
-                        if state.get("action") == "registration":
-                            self.handle_registration_input(chat_id, user_id, username, text)
-                            return
+                        del self.user_states[user_id]
+                    self.send_message(chat_id, "Действие отменено", self.main_menu_keyboard())
+                    return
+                
+                if username in self.admin_states:
+                    state = self.admin_states[username]
                     
-                    if text.startswith("/start"):
-                        self.handle_start(chat_id, user)
-                    elif text.startswith("/help"):
-                        self.handle_help(chat_id, username)
-                    elif text.startswith("/admin_panel"):
-                        self.handle_admin_panel(chat_id, username)
+                    if state.get("action") in ["add_class_input", "delete_class_input"]:
+                        self.handle_class_input(chat_id, username, text)
+                        return
                     
-                    # Проверяем обычные команды меню для всех пользователей
-                    elif text in ["📚 Моё расписание", "🏫 Общее расписание", "🔔 Звонки", "📰 Новости", 
-                                "⚙️ Настройки", "🏆 Достижения", "📈 Статистика", "ℹ️ Помощь", "⬅️ Назад"]:
-                        self.handle_main_menu(chat_id, user_id, text, username)
-                    elif self.is_valid_class(text):
-                        self.handle_main_menu(chat_id, user_id, text, username)
-                    # Проверяем команды админа
-                    elif text in ["👥 Список пользователей", "❌ Удалить пользователя", "📝 Редактировать расписание", 
-                                "🏫 Управление классами", "🕧 Управление звонками", "📤 Загрузить Excel", "📊 Статистика"]:
-                        # Это команды админа - проверяем права
-                        if self.is_admin(username):
-                            self.handle_admin_menu(chat_id, username, text)
-                        else:
-                            self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
-                    elif text in ["1 смена", "2 смена"]:
-                        # Команды смены - только для админов
-                        if self.is_admin(username):
-                            self.handle_shift_selection(chat_id, username, text)
-                        else:
-                            self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
+                    if state.get("action") in ["edit_bell_number", "edit_bell_start", "edit_bell_end"]:
+                        self.handle_bell_input(chat_id, username, text)
+                        return
+                    
+                    if state.get("action") == "delete_user":
+                        self.delete_user_by_identifier(chat_id, username, text)
+                        return
+                    elif state.get("action") == "edit_schedule_input":
+                        self.handle_schedule_input(chat_id, username, text)
+                        return
+                    elif state.get("action") == "edit_schedule_class":
+                        self.handle_schedule_class_selection(chat_id, username, text)
+                        return
+                    elif state.get("action") == "edit_schedule_day":
+                        self.handle_schedule_day_selection(chat_id, username, text)
+                        return
+                    elif state.get("action") == "select_shift":
+                        self.handle_shift_selection(chat_id, username, text)
+                        return
+                    elif state.get("action") == "broadcast_waiting_message":
+                        self.handle_broadcast_message(chat_id, username, text)
+                        return
+                    elif state.get("action") in ["add_news_title", "add_news_content", "add_news_audience", "edit_news_field"]:
+                        self.handle_text_message(chat_id, user_id, username, text)
+                        return
+                    elif state.get("action") == "roster_add_waiting_data":
+                        self.handle_roster_add(chat_id, username, text)
+                        return
+                    elif state.get("action") == "roster_remove_waiting_data":
+                        self.handle_roster_remove(chat_id, username, text)
+                        return
+                    elif state.get("action") == "roster_view_waiting_class":
+                        self.handle_roster_view(chat_id, username, text)
+                        return
+                
+                if user_id in self.user_states:
+                    state = self.user_states[user_id]
+                    if state.get("action") == "registration":
+                        self.handle_registration_input(chat_id, user_id, username, text)
+                        return
+                    elif state.get("action") == "news_search":
+                        self.process_news_search(chat_id, user_id, text)
+                        return
+                
+                if text.startswith("/start"):
+                    self.handle_start(chat_id, user)
+                elif text.startswith("/help"):
+                    self.handle_help(chat_id, username)
+                elif text.startswith("/admin_panel"):
+                    self.handle_admin_panel(chat_id, username)
+                elif text.startswith("/rosters"):
+                    if self.is_admin(username):
+                        self.show_roster_management(chat_id, username)
                     else:
-                        # Остальные сообщения
-                        if not self.get_user(user_id):
-                            self.handle_registration_start(chat_id, user_id)
-                        else:
-                            self.handle_text_message(chat_id, user_id, username, text)
-        
-        except Exception as e:
-            logger.error(f"Ошибка в process_update: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+                        self.send_message(chat_id, "❌ У вас нет доступа к этой функции")
+                elif text.startswith("/import_rosters"):
+                    if self.is_admin(username):
+                        self.start_roster_import(chat_id, username)
+                    else:
+                        self.send_message(chat_id, "❌ У вас нет доступа к этой функции")
+                
+                # Проверяем обычные команды меню для всех пользователей
+                elif text in ["📚 Моё расписание", "🏫 Общее расписание", "🔔 Звонки", "📰 Новости", 
+                            "⚙️ Настройки", "🏆 Достижения", "📈 Статистика", "ℹ️ Помощь", "⬅️ Назад"]:
+                    self.handle_main_menu(chat_id, user_id, text, username)
+                elif self.is_valid_class(text):
+                    self.handle_main_menu(chat_id, user_id, text, username)
+                # Проверяем команды админа
+                elif text in ["👥 Список пользователей", "❌ Удалить пользователя", "📝 Редактировать расписание", 
+                            "🏫 Управление классами", "🕧 Управление звонками", "📤 Загрузить Excel", "📊 Статистика"]:
+                    # Это команды админа - проверяем права
+                    if self.is_admin(username):
+                        self.handle_admin_menu(chat_id, username, text)
+                    else:
+                        self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
+                elif text in ["1 смена", "2 смена"]:
+                    # Команды смены - только для админов
+                    if self.is_admin(username):
+                        self.handle_shift_selection(chat_id, username, text)
+                    else:
+                        self.send_message(chat_id, "❌ У вас нет доступа к этой функции", self.main_menu_keyboard())
+                else:
+                    # Остальные сообщения
+                    if not self.get_user(user_id):
+                        self.handle_registration_start(chat_id, user_id)
+                    else:
+                        self.handle_text_message(chat_id, user_id, username, text)
+    
+    except Exception as e:
+        logger.error(f"Ошибка в process_update: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
     def run(self):
         logger.info("Бот запущен!")
