@@ -3484,6 +3484,7 @@ class SimpleSchoolBot:
                     self.send_message(chat_id, "⚠️ Слишком много запросов. Пожалуйста, подождите.")
                     return
                 
+                # 1. Обработка Excel для расписания
                 if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "waiting_excel":
                     document = message["document"]
                     file_id = document["file_id"]
@@ -3503,54 +3504,58 @@ class SimpleSchoolBot:
                     
                     file_content = self.download_file(file_info["file_path"])
                     if not file_content:
-                            self.send_message(chat_id, "❌ Ошибка загрузки файла")
-                            return
+                        self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                        return
                     
                     self.send_message(chat_id, f"🔍 Обрабатываю расписание для {shift} смены...")
                     
-                    success, message = self.import_schedule_from_excel(file_content, shift)
+                    success, message_text = self.import_schedule_from_excel(file_content, shift)
                     
                     if success:
-                        self.send_message(chat_id, f"✅ {message}", self.admin_menu_inline_keyboard())
+                        self.send_message(chat_id, f"✅ {message_text}", self.admin_menu_inline_keyboard())
                     else:
-                        self.send_message(chat_id, f"❌ {message}", self.admin_menu_inline_keyboard())
+                        self.send_message(chat_id, f"❌ {message_text}", self.admin_menu_inline_keyboard())
                     
                     if username in self.admin_states:
                         del self.admin_states[username]
                     return
                 
-            if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "roster_waiting_excel":
-                document = message["document"]
-                file_id = document["file_id"]
-                file_name = document.get("file_name", "")
-
-                if not file_name.lower().endswith(('.xlsx', '.xls')):
-                    self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
+                # 2. Обработка Excel для списков учеников
+                if "document" in message and username in self.admin_states and self.admin_states[username].get("action") == "roster_waiting_excel":
+                    document = message["document"]
+                    file_id = document["file_id"]
+                    file_name = document.get("file_name", "")
+                    
+                    if not file_name.lower().endswith(('.xlsx', '.xls')):
+                        self.send_message(chat_id, "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)")
+                        return
+                    
+                    self.send_message(chat_id, "📥 Загружаю файл со списком учеников...")
+                    
+                    file_info = self.get_file(file_id)
+                    if not file_info:
+                        self.send_message(chat_id, "❌ Ошибка получения информации о файле")
+                        return
+                    
+                    file_content = self.download_file(file_info["file_path"])
+                    if not file_content:
+                        self.send_message(chat_id, "❌ Ошибка загрузки файла")
+                        return
+                    
+                    self.send_message(chat_id, "🔍 Обрабатываю список учеников...")
+                    
+                    success, message_text = self.db.import_roster_from_excel(file_content)
+                    
+                    if success:
+                        self.send_message(chat_id, f"✅ {message_text}", self.roster_management_inline_keyboard())
+                    else:
+                        self.send_message(chat_id, f"❌ {message_text}", self.roster_management_inline_keyboard())
+                    
+                    if username in self.admin_states:
+                        del self.admin_states[username]
                     return
-                self.send_message(chat_id, "📥 Загружаю файл со списком учеников...")
-            
-                file_info = self.get_file(file_id)
-                if not file_info:
-                    self.send_message(chat_id, "❌ Ошибка получения информации о файле")
-                    return
-            
-                file_content = self.download_file(file_info["file_path"])
-                if not file_content:
-                    self.send_message(chat_id, "❌ Ошибка загрузки файла")
-                    return
-            
-                self.send_message(chat_id, "🔍 Обрабатываю список учеников...")
                 
-                success, message_text = self.db.import_roster_from_excel(file_content)
-                
-                if success:
-                    self.send_message(chat_id, f"✅ {message_text}", self.roster_management_inline_keyboard())
-                else:
-                    self.send_message(chat_id, f"❌ {message_text}", self.roster_management_inline_keyboard())
-                
-                    del self.admin_states[username]
-                    return
-                
+                # 3. Обработка текстовых сообщений
                 if "text" in message:
                     text = message["text"]
                     
@@ -3594,6 +3599,15 @@ class SimpleSchoolBot:
                         elif state.get("action") in ["add_news_title", "add_news_content", "add_news_audience", "edit_news_field"]:
                             self.handle_text_message(chat_id, user_id, username, text)
                             return
+                        elif state.get("action") == "roster_add_waiting_data":
+                            self.handle_roster_add(chat_id, username, text)
+                            return
+                        elif state.get("action") == "roster_remove_waiting_data":
+                            self.handle_roster_remove(chat_id, username, text)
+                            return
+                        elif state.get("action") == "roster_view_waiting_class":
+                            self.handle_roster_view(chat_id, username, text)
+                            return
                     
                     if user_id in self.user_states:
                         state = self.user_states[user_id]
@@ -3608,7 +3622,6 @@ class SimpleSchoolBot:
                     elif text.startswith("/admin_panel"):
                         self.handle_admin_panel(chat_id, username)
                     
-                    # === ЗДЕСЬ НУЖНО ЗАМЕНИТЬ КОД ===
                     # Проверяем обычные команды меню для всех пользователей
                     elif text in ["📚 Моё расписание", "🏫 Общее расписание", "🔔 Звонки", "📰 Новости", 
                                 "⚙️ Настройки", "🏆 Достижения", "📈 Статистика", "ℹ️ Помощь", "⬅️ Назад"]:
@@ -3635,7 +3648,6 @@ class SimpleSchoolBot:
                             self.handle_registration_start(chat_id, user_id)
                         else:
                             self.handle_text_message(chat_id, user_id, username, text)
-                    
         
         except Exception as e:
             logger.error(f"Ошибка в process_update: {e}")
